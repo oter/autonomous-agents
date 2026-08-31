@@ -10,12 +10,11 @@ ui:
   password_bcrypt: "$2a$12$PLACEHOLDERPLACEHOLDERPLACEHOLDERPLACEHOLDER"
 
 agents_dir: ./agents
-# ?? No hot reload in v1. A change needs a redeploy — which in Coolify is the
-# reload. Skips fsnotify and the "what about in-flight Runs" question entirely.
-# ?? A bad Agent file fails the WHOLE startup rather than quarantining itself.
-# Config comes from reviewed git; a loudly failed deploy beats one Agent
-# silently not running. Open to argument — it does mean one typo stops
-# everything.
+# DECIDED: no hot reload in v1. A change needs a redeploy — which in Coolify is
+# the reload. Skips fsnotify and the "what about in-flight Runs" question.
+# DECIDED: a bad Agent file fails the WHOLE startup rather than quarantining
+# itself. Config comes from reviewed git; a loudly failed deploy beats one Agent
+# silently not running. The cost is accepted: one typo stops everything.
 
 runners:
   local:
@@ -37,7 +36,7 @@ journal:
   # run id: 20260831-201204-<agent>-<4 hex>
 
 stop_grace: 90s
-# ?? NOT 30s. `claude` drains stdout before exiting, waiting up to 30s on its
+# DECIDED: 90s, NOT 30s. `claude` drains stdout before exiting, waiting up to 30s on its
 # own if the consumer reads slowly — which would eat the entire grace and leave
 # nothing for the Journal push. (ticket 01) See the ticket 04 answer: writing the
 # event stream to a FILE rather than a pipe removes the drain risk entirely, and

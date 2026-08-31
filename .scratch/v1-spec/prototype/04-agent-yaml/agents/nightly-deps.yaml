@@ -15,11 +15,10 @@ prompt: |
 repos:
   - url: git@github.com:oter/some-service.git
     path: workspace          # cloned to /run/workspace
-# ?? Is `repos` an Agent-level field at all, or does the agent clone things
-# itself from its prompt? Charting said "the agent clones what it needs, which
-# keeps the control plane out of the git business". But teardown has to push a
-# work branch, so SOMETHING has to know which checkout is the work. Declaring it
-# here is the smaller lie. Open.
+# DECIDED: `repos` is an Agent-level field. Charting wanted the agent to clone
+# what it needs, but teardown has to push a work branch, so something must know
+# which checkout is the work. Declaring it is the smaller lie than an entrypoint
+# guessing. Refs are still the agent's job — see github-pr-review.yaml.
 
 skills: []
 
@@ -47,7 +46,7 @@ triggers:
     cron: "0 3 * * *"
     timezone: Europe/Berlin
     catch_up: false
-# ?? catch_up: false means ticks missed while the control plane was down are
+# DECIDED: catch_up false means ticks missed while the control plane was down are
 # skipped, not replayed. Default, and the safe one — a redeploy should not
 # stampede. Set true only for Agents that are genuinely idempotent.
 

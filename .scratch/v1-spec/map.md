@@ -142,6 +142,20 @@ conversation before the map existed — but they bind every ticket below.
   killing the `PATH` trap. The daemon on the Mac is the operator's choice; it
   supplies one value, the socket path.
 
+- **[The Agent YAML schema](issues/04-agent-yaml-schema.md)**
+  (04): required is `name`, `agent`, `prompt`; everything else defaults.
+  **`personality` is a free-text string** mapped to `--append-system-prompt` /
+  `-c developer_instructions=` — but claude appends where codex replaces, so the
+  schema says so rather than pretending. **No unified budget field**:
+  `limits.wall_clock` is the only universal limit and CLI-specific caps go
+  through verbatim `extra_args`, because claude caps dollars and codex caps
+  weighted tokens. **Repos are declared, refs are not** — Teardown must know what
+  to push, but the agent checks out its own commit from the payload, so
+  no-templating survived its strongest counterexample. Triggers are a list; the
+  Run learns which fired from `TRIGGER_KIND`/`TRIGGER_NAME`. `catch_up: false` by
+  default. **No hot reload**, and a bad file **fails the whole startup**.
+  Prototype: [`prototype/04-agent-yaml/`](prototype/04-agent-yaml/).
+
 ### Known ceiling
 
 The container holds a write credential for the Journal repository, so a Run can
@@ -164,9 +178,6 @@ the ambiguity.
 
 ## Not yet specified
 
-- **What "personality" concretely is.** A system prompt string, a mounted
-  `CLAUDE.md`/`AGENTS.md`, or a skill. Likely resolves inside the schema ticket,
-  but may graduate on its own.
 - **Live log streaming to the UI.** Server-sent events, websockets, or polling.
   The remote-Runner half is answered by ticket 03 — resume with `Timestamps` plus
   an inclusive, self-disabling `Since`, de-duplicate at the boundary, and run an

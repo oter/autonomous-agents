@@ -9,17 +9,17 @@ personality: |
 
 prompt: |
   Read /run/trigger.json — a GitHub pull_request webhook payload.
-  Review the diff and post your findings as a single PR comment.
+  Check out the pull request's head SHA in /run/workspace, then review the diff
+  and post your findings as a single PR comment.
 
 repos:
   - url: git@github.com:oter/some-service.git
     path: workspace
-    ref: "{{ trigger }}"
-# ?? This is the one place a template is tempting: the PR's head SHA lives in
-# the payload. Charting ruled templating out. Alternatives: clone default branch
-# and let the agent fetch the ref itself from /run/trigger.json (no templating,
-# one extra agent step), or add exactly one blessed interpolation. Open, and it
-# is the strongest argument against the no-templating decision so far.
+# No `ref:` key, deliberately. This was the strongest counterexample to the
+# no-templating decision — the PR's head SHA lives in the payload — and the line
+# held. The Agent declares WHICH repo, because teardown has to know what to push;
+# the agent checks out WHICH COMMIT itself, by reading /run/trigger.json. Adding
+# one blessed interpolation is how a config file becomes a language.
 
 skills:
   - oter/review-skills --skill correctness

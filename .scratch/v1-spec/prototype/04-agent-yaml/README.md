@@ -11,4 +11,6 @@ scheduled maintenance job on the remote Runner, and a high-concurrency PR
 reviewer — plus one `control-plane.yaml`. If a field only makes sense for one of
 the three, it is probably in the wrong file.
 
-`# ??` marks a genuine open choice, not a placeholder. React to those first.
+Every open choice has now been taken — `# DECIDED:` comments record the verdict
+and the reasoning inline. The full write-up is on
+[ticket 04](../../issues/04-agent-yaml-schema.md).

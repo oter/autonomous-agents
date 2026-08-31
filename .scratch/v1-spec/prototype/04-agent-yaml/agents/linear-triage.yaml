@@ -40,11 +40,11 @@ secrets:
     -----END AGE ENCRYPTED FILE-----
 # The map of names IS the Allowlist — there is no separate allowlist key,
 # because under ADR-0002 the Allowlist is "what ciphertext exists".
-# ?? Use a `|` literal block, never `>` — folded scalars mangle armored age.
+# Use a `|` literal block, never `>` — folded scalars mangle armored age. (ticket 02)
 
 limits:
   wall_clock: 15m      # the ONLY universal limit. Neither CLI has a wall clock.
-# ?? No unified token/budget key on purpose. claude caps dollars
+# DECIDED: no unified token/budget key. claude caps dollars
 # (--max-budget-usd, and it overshot 350x in testing — a stop condition, not a
 # guarantee); codex caps weighted tokens via an undocumented, off-by-default,
 # under-development config key. A shared `budget:` field would be a lie.

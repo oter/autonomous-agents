@@ -37,3 +37,10 @@ exit. This is the ticket that makes "the container pushes at teardown" real.
 > `error_seen` is sticky, so the outcome must be read from the event stream, not
 > `$?`. A codex network partition retries forever with no timeout — the internal
 > self-limit is mandatory, not defensive.
+
+> **From ticket 04:** write the event stream to a **file**, not a pipe the
+> control plane reads. `claude` drains stdout before exiting and waits up to 30s
+> if the consumer is slow, which would eat the whole grace before the Journal
+> push. Writing to a file also removes the need to hold a log stream open across
+> SSH, which ticket 03 found has no liveness detection. `stop_grace` is 90s.
+> Live UI logs become best-effort and losing them costs nothing.
