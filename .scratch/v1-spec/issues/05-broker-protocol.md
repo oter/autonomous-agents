@@ -25,3 +25,9 @@ Pin down the contract between a Run and its Runner's broker.
   teardown never fires.
 - Failure modes: broker down, socket missing, ciphertext undecryptable by this
   Runner. Each should produce an error a human can act on.
+
+> **Constraint from ticket 02:** macOS cannot bind-mount a unix socket into a
+> container. The Mac mini Runner runs its Broker containerised on a shared Docker
+> volume; the local Runner uses a host directory. Bind-mount the *directory*, never
+> the socket file — a file mount pins the inode and a Broker restart leaves running
+> containers on `ECONNREFUSED`.

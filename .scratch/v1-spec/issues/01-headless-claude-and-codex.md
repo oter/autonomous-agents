@@ -1,7 +1,7 @@
 # Headless `claude` and `codex`: what the CLIs actually give us
 
 Type: research
-Status:
+Status: claimed
 Blocked by:
 
 ## Question

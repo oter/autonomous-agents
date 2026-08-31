@@ -28,3 +28,9 @@ Scoped deliberately to what unblocks a decision, not to standing the system up.
 The answer records what was done plus any fact later tickets depend on. If
 `ssh://` turns out not to hold, say so plainly — that reopens the Runner design
 rather than getting worked around.
+
+> **Constraint from ticket 02:** macOS cannot bind-mount a unix socket into a
+> container. The Mac mini Runner runs its Broker containerised on a shared Docker
+> volume; the local Runner uses a host directory. Bind-mount the *directory*, never
+> the socket file — a file mount pins the inode and a Broker restart leaves running
+> containers on `ECONNREFUSED`.

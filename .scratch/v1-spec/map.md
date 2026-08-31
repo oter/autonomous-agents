@@ -88,6 +88,18 @@ conversation before the map existed — but they bind every ticket below.
 - **Concurrency** (charting): per-Agent `max_concurrent`, default 1, queued.
   Plus a per-Runner cap.
 
+### Resolved tickets
+
+- **[Build the Broker; reuse nothing for it](issues/02-age-multi-recipient-and-broker.md)**
+  (02): every existing local-daemon secret tool brokers a *key*, we need a
+  *value*. `sops keyservice` is a blind decryption oracle and its `exec-env`
+  orphans children on `SIGTERM`, which would silently break Teardown. Caller
+  identity is a **per-Run socket in a per-Run directory**, bind-mounted (the
+  directory, never the file) into only that Run's container. **macOS cannot
+  bind-mount a unix socket, so the Mac mini Runner containerises its Broker on a
+  shared volume** — the two Runners diverge here. One age file per Agent, not per
+  secret. ADR-0001 amended: the Broker must be name-addressed.
+
 ### Known ceiling
 
 The container holds a write credential for the Journal repository, so a Run can

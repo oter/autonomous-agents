@@ -1,7 +1,7 @@
 # Docker Go SDK over `ssh://`: what works and what breaks
 
 Type: research
-Status:
+Status: claimed
 Blocked by:
 
 ## Question

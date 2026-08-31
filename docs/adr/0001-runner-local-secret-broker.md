@@ -56,7 +56,25 @@ Every decryption passes through the broker and can be logged.
 
 The cost is a second daemon to deploy and an age identity to provision per
 Runner, and secrets must be re-encrypted when a Runner is added.
+A Run can still capture a secret deliberately, and more easily than "only in the
+child's environment" suggests: any process running as the same uid can read
+`/proc/<child>/environ` while the child lives, so no wrapping trick is even
+required. This boundary limits accidental disclosure — it keeps plaintext out of
+the model's context, which is where a leak becomes a commit message — and it
+constrains scope to the Allowlist. It does not contain a hostile agent.
 
-A Run can still capture a secret deliberately — by wrapping a command that
-prints it, for example. This boundary limits accidental disclosure and
-constrains scope; it does not contain a hostile agent.
+## Amendments
+
+**2026-08-31, from ticket 02.** Two refinements, neither of which changes the
+decision.
+
+The Broker must be **name-addressed**: it takes secret names and returns values,
+never ciphertext-in/key-out. This is what makes the Allowlist and the audit log
+mean anything. The distinction is not academic — `sops keyservice` satisfies
+every sentence of the Decision above while being a blind decryption oracle that
+logs nothing useful, because its request carries no secret name and no caller.
+
+**A macOS host cannot bind-mount a unix socket into a container.** The Mac mini
+Runner therefore runs its Broker containerised, sharing a Docker volume with the
+Run, rather than exposing a host socket path. The two Runners diverge here; the
+`dsecrets` side of the contract does not change.
