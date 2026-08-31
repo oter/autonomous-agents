@@ -130,3 +130,15 @@ file, not to a pipe the control plane reads.** That removes the drain risk at
 source, and simultaneously removes the need to hold a log stream open across SSH
 — which ticket 03 found has no liveness detection whatsoever. Two problems, one
 fix.
+
+### Amended: resource limits
+
+Agents run on the **same Docker host as the control plane** on the `local`
+Runner, which the original answer did not account for. `limits` needs
+`memory` and `cpus` alongside `wall_clock` — Docker enforces both at container
+create, so this is a field, not a feature.
+
+Without them, `max_concurrent: 6` on a modest VM lets Runs starve the control
+plane that supervises them, and the failure looks like the whole platform
+degrading rather than one Agent misbehaving. Defaults should be conservative and
+explicitly set rather than left unbounded.
