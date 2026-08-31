@@ -161,3 +161,50 @@ dsecrets FOO -- sh -c 'trap "echo caught; exit 0" TERM; sleep 30 & wait'
 
 SIGTERM it, assert `caught` appears. That is the bug that silently loses the
 Journal of every timed-out Run, so it is the one that gets a test.
+
+### Amended by ticket 06
+
+[ADR-0003](../../../docs/adr/0003-secrets-over-the-run-api.md) moved secrets onto
+the Run API. The **mechanism** above is superseded: there is no envelope, no
+per-Run age identity, and no `age` in the base image. Everything else — the
+command-line shape, the process model, and the failure discipline — survives
+unchanged.
+
+```sh
+#!/bin/sh
+# dsecrets NAME[,NAME...] -- command [args...]
+set -eu
+
+names=${1:?usage: dsecrets NAME[,NAME...] -- cmd}
+shift
+[ "${1:-}" = "--" ] || { echo "dsecrets: expected -- before the command" >&2; exit 2; }
+shift
+
+# curl -f makes a non-2xx an error, so set -e aborts before the child runs.
+# A denied name is a 403 from the control plane, not a silent omission.
+resp=$(curl -fsS --max-time 10 \
+  -H "Authorization: Bearer $RUN_TOKEN" -H 'Content-Type: application/json' \
+  --data "$(jq -cn --arg n "$names" '{names: ($n | split(","))}')" \
+  "$CONTROL_PLANE_URL/run/secrets")
+
+for n in $(echo "$names" | tr ',' ' '); do
+  printf '%s' "$resp" | jq -e --arg n "$n" 'has($n)' >/dev/null || {
+    echo "dsecrets: control plane did not return: $n" >&2; exit 3; }
+  v=$(printf '%s' "$resp" | jq -j --arg n "$n" '.[$n]'; printf X)
+  export "$n=${v%X}"
+done
+
+exec "$@"
+```
+
+What survives from the original answer: `has($n)` checked before the value is
+read, because a command substitution's status is its *last* command; `jq -j` plus
+the `X` sentinel keeping values byte-exact; `exec` making the `sops exec-env`
+orphaning bug structurally impossible; no file sink; no decrypt-everything mode;
+the secret name being the environment variable name; and every failure exiting
+non-zero without running the child.
+
+What changes: the base image needs **`curl` and `jq`, and no longer needs
+`age`**. The Allowlist is enforced **server-side** by the control plane rather
+than by which ciphertext happens to exist. Every access is logged. And a secret
+now requires the control plane to be reachable — see ADR-0003's consequences.

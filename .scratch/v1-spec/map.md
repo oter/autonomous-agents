@@ -43,14 +43,15 @@ conversation before the map existed — but they bind every ticket below.
 - **Two Runners** (charting): `local` (the control plane's own Docker host) and
   `macmini` (remote, reached over `ssh://`). Named once in control-plane config;
   Agents reference a Runner by name and default to `local`.
-- **Per-Run key envelope** (charting, **revised**): see
-  [ADR-0002](../../docs/adr/0002-per-run-key-envelope.md), which supersedes
-  ADR-0001. At spawn the control plane re-encrypts an Agent's allowlisted secrets
-  to a **fresh identity for that Run alone** and injects the ciphertext as env
-  vars plus the identity as a file; `dsecrets` decrypts locally and `exec`s the
-  child. No Broker daemon, no socket, and the macOS bind-mount divergence
-  disappears — both Runners are identical for secrets. Extracting the key yields
-  exactly the Allowlist for one Run, which the Agent already had.
+- **Secrets over the Run API** (charting, **revised twice**): see
+  [ADR-0003](../../docs/adr/0003-secrets-over-the-run-api.md), which supersedes
+  ADR-0002, which superseded ADR-0001. `dsecrets` asks the control plane over the
+  Run API; the control plane checks the Allowlist **server-side**, decrypts with
+  the master identity, logs the access, and returns plaintext. **No key material
+  of any kind enters a container** — ADR-0001's original goal, reached without its
+  per-Runner daemon, because ticket 06 built the channel for other reasons and
+  secrets ride it for the cost of one endpoint. Per-access audit logging returns.
+  The trade: a secret now needs the control plane reachable.
 - **age for encryption** (charting): `filippo.io/age`, multi-recipient, no cloud
   KMS. Ciphertext inline in the Agent YAML.
 - **One shared base image** (charting): both CLIs and the `skills` CLI baked in.
@@ -161,11 +162,31 @@ conversation before the map existed — but they bind every ticket below.
   and `jq`, ending in `exec` — so signals reach the child because nothing is left
   in the way, making ticket 02's `sops exec-env` orphaning bug structurally
   impossible. Secrets travel as **one `DSECRETS_ENVELOPE`** (a single age
-  ciphertext over a flat JSON object) plus plaintext `DSECRETS_NAMES`. Identity
-  at `/run/dsecrets/identity`, 0400, tmpfs, kept for the Run's life. **No file
-  sink and no decrypt-everything mode.** `age` and `jq` join the base image.
-  Accepted hole: the **model credential is plaintext in the agent's own
-  environment**, because the CLI needs it — recorded in ADR-0002.
+  ciphertext over a flat JSON object) — **the envelope was later superseded by
+  ADR-0003**, which replaced local decryption with a control-plane call. What
+  survived: the command-line shape, `exec` rather than fork, `has()` checked
+  before the value is read, `jq -j` plus a sentinel keeping values byte-exact,
+  **no file sink and no decrypt-everything mode**, and every failure exiting
+  non-zero without running the child. Accepted hole: the **model credential is
+  plaintext in the agent's own environment**, because the CLI needs it.
+
+- **[The entrypoint and teardown contract](issues/06-entrypoint-contract.md)**
+  (06): the container **fetches** everything over a new **Run API** rather than
+  having it pushed in — the control plane cannot write files to a remote Runner,
+  it has only the Docker API. The agent runs as `& wait $!` (a trap cannot fire
+  under a foreground command), stdout goes to a **file** not a pipe (claude drains
+  stdout for up to 30s), stdin is `</dev/null` (codex hangs otherwise), and a
+  background `sleep && kill -TERM 1` enforces the wall clock from **inside**,
+  because codex retries a partition forever. One `trap teardown EXIT` plus
+  `trap 'exit 143' TERM` gives one teardown path for every exit. **Work pushes
+  first, Journal last**, so the Journal records the work push's outcome —
+  reversed from the original recommendation because heartbeats mean the Journal is
+  no longer the single point of loss. Outcome is learned from **both** ends: the
+  container reports, and the control plane polls `ContainerInspect`, because only
+  the latter sees a container that was killed without warning. Skills, clone, or
+  payload failure **aborts**. `build_argv` lives in the entrypoint, not in Go, so
+  a vendor renaming a flag is an image rebuild rather than a control-plane
+  redeploy.
 
 ### Known ceiling
 
@@ -174,13 +195,16 @@ edit its own record before teardown fires. Chosen deliberately over
 control-plane capture, for the simplicity of a single push path. Revisit if the
 Journal is ever used for anything an agent has an incentive to distort.
 
-**A Run can read its own secrets.** ADR-0002 ships a per-Run age identity into
-the container, so plaintext is one command away for an agent that goes looking.
-Raised twice and accepted twice: the per-Run scoping means extracting the key
-yields only what the Allowlist already granted, and `dsecrets` still keeps
-plaintext out of the agent's own environment, which is where an accidental leak
-becomes a commit message. Per-access audit logging is the thing genuinely given
-up; it returns only with a Broker.
+**A Run's bearer token is equivalent to its Allowlist.** Under ADR-0003 no key
+material is in the container, but `RUN_TOKEN` will fetch anything the Agent is
+permitted, and the agent can read its own environment. The blast radius is
+unchanged from the key-in-container design; what improved is that the credential
+is centrally revocable and every use is logged. **The model credential remains
+plaintext in the agent's own environment**, because the CLI consumes it — no
+channel design changes that.
+
+**Secrets need the control plane reachable.** A Run continues working through an
+outage, but any command needing a secret fails until the link returns.
 
 **Limit-vs-crash is not structurally distinguishable for codex in exec mode**
 (ticket 01). The error codes exist internally and are flattened to a bare string;
@@ -189,10 +213,12 @@ the ambiguity.
 
 ## Not yet specified
 
-- **Live log streaming to the UI.** Server-sent events, websockets, or polling.
-  The remote-Runner half is answered by ticket 03 — resume with `Timestamps` plus
-  an inclusive, self-disabling `Since`, de-duplicate at the boundary, and run an
-  idle watchdog. Only the browser-facing transport is still open.
+- **Live log streaming to the UI.** Deferred to v2 at ticket 06: the Run API is
+  the obvious home for it, and streaming over that channel would delete the
+  docker-logs-across-the-link problem entirely, but it brings buffering,
+  backpressure and ordering with it. Ticket 03 answered the Docker-side half if
+  it is ever needed — resume with `Timestamps` plus an inclusive, self-disabling
+  `Since`, de-duplicate at the boundary, and run an idle watchdog.
 - **Failure handling for a Run.** Retry, backoff, dead-letter, alerting. Unclear
   whether v1 needs anything beyond "it's in the Journal".
 - **Cost and token accounting per Run.** Ticket 01 captured the event schema, so

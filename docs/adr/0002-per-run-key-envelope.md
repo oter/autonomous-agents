@@ -4,7 +4,7 @@ Date: 2026-08-31
 
 ## Status
 
-Accepted. Supersedes [ADR-0001](0001-runner-local-secret-broker.md).
+Superseded by [ADR-0003](0003-secrets-over-the-run-api.md). (Superseded ADR-0001.)
 
 ## Context
 
