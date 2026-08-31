@@ -661,7 +661,7 @@ unstable token budget".
 
 ## 4. Exit codes
 
-All observed on this machine, both binaries.
+Observed on this machine unless marked otherwise.
 
 | Condition | `claude` 2.1.251 | `codex` 0.151.0 |
 | --- | --- | --- |
@@ -669,8 +669,12 @@ All observed on this machine, both binaries.
 | Unknown/invalid CLI flag | `1` (`error: unknown option '--bogus-flag'` on stderr, no JSON) | `2` (`error: unexpected argument '--bogus-flag' found` on stderr, no JSON) |
 | Not authenticated | `1` | `1` |
 | Hit `--max-turns` | `1` | n/a |
-| Hit `--max-budget-usd` | `1` | n/a |
-| SIGTERM | `143` (documented, and consistent with 128+15) | `143` (observed) |
+| Hit a budget cap | `1` (`--max-budget-usd`) | `1` (`features.rollout_budget`) |
+| Sandbox / permission denial | run continues, `permission_denials[]` in `result` | `0` — run continues, model works around it |
+| SIGTERM | `143` (documented, consistent with 128+15) | `143` |
+| SIGINT | (turn ends; session resumable) | `1` |
+| Panic | — | `101` (inferred from Rust defaults; no `panic = "abort"` in any profile — **not triggered**) |
+| Network partition | — | **never exits** — retries forever |
 
 **A caller cannot distinguish "finished" from "hit its limit" from "crashed" by
 exit code.** Everything that is not a clean finish, a signal, or an argv error
@@ -860,8 +864,33 @@ cache/, plugins/, rules/
 
 **`codex` writes considerably more than `claude`, including six SQLite
 databases.** `$CODEX_HOME` must be a writable, reasonably-sized path in the
-container. `--ephemeral` suppresses session file persistence; it does not
-suppress the SQLite state.
+container. `--ephemeral` means **no rollout recorder is constructed at all** —
+no session file is written. It does not suppress the SQLite state. There is no
+`config.toml` key for it; it is flag-only.
+
+Rollout file details that matter if the Journal captures it:
+
+- Path: `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ISO8601>-<thread_uuid>.jsonl`.
+  The **directory** uses local time; the **line timestamps** use UTC with a `Z`
+  suffix. Reverted threads get a second uuid appended. Cold files are
+  zstd-compressed in place to `*.jsonl.zst` — a Teardown that globs `*.jsonl`
+  will miss them.
+- Line envelope: `{timestamp, ordinal?, ...item}` (the item is flattened).
+- 10 record types: `session_meta`, `response_item`, `inter_agent_communication`,
+  `inter_agent_communication_metadata`, `compacted`, `turn_context`,
+  `world_state`, `security_risk_score`, `event_msg`, `realtime_item`.
+- **Naming trap:** `TurnStarted` serialises as `"task_started"` and
+  `TurnComplete` as `"task_complete"` — which is what I observed and initially
+  mis-read as unrelated events.
+- **`codex exec` writes `history_mode: "paginated"`** (verified in
+  `session_meta`; every line carried an `ordinal`). In paginated mode the
+  transcript rides in `event_msg`/`item_completed` with a `TurnItem` payload
+  whose tags are **PascalCase** (`"UserMessage"`, `"CommandExecution"`,
+  `"Reasoning"`, `"AgentMessage"`) — unlike every other enum in the format,
+  which is snake_case. Any parser needs to handle both conventions.
+- Transient `error` events are **not** persisted to the rollout, so retry noise
+  and some fatal error strings exist only in the stdout stream. That is the one
+  respect in which the rollout is not a superset — capture both.
 
 **Divergence:** `claude` has `CLAUDE_CONFIG_DIR`, `codex` has `CODEX_HOME`, and
 codex additionally honours `CODEX_SQLITE_HOME`. Both are relocatable, so a
@@ -1190,6 +1219,7 @@ codex and are conditional for claude.
 | `codex --help`, `codex exec --help`, `codex login --help`, `codex doctor`, `codex debug prompt-input` | the installed binary at `/opt/homebrew/Caskroom/codex/0.151.0/bin/codex` | 0.151.0 |
 | codex exit codes, `--json` event shapes incl. `turn.failed`, rollout file contents, `CODEX_API_KEY` vs `OPENAI_API_KEY`, skill roots, SIGTERM→143, `developer_instructions` / `personality` / `AGENTS.md` injection | executed locally; skill roots and prompt injection via `codex debug prompt-input`, which renders the model-visible prompt with no API call | 0.151.0, 2026-08-31 |
 | codex non-interactive semantics, "No explicit turn/iteration limits documented" | `https://learn.chatgpt.com/docs/non-interactive-mode` (308 from `developers.openai.com/codex/noninteractive`) | fetched 2026-08-31 |
+| codex exit-code decision point, complete `--json` event/item schema, absence of any turn cap, `features.rollout_budget`, `job_max_runtime_seconds` being a no-op, rollout record types and `history_mode: paginated`, `--ephemeral` semantics | `openai/codex` source at tag **`rust-v0.151.0`**, commit `78c290807ce710180111df227df3b7a4fe845452` (2026-08-29) — `exec/src/lib.rs`, `exec/src/exec_events.rs`, `exec/src/event_processor_with_jsonl_output.rs`, `exec/src/cli.rs`, `core/src/rollout_budget.rs`, `features/src/feature_configs.rs`, `config/src/config_toml.rs`, `history/src/rollout_payload.rs`, `rollout/src/policy.rs` | matches the installed 0.151.0 |
 | codex hook events, `permissionDecision: deny`, hook trust | `https://learn.chatgpt.com/docs/hooks`, cross-checked against strings in the 0.151.0 binary | fetched 2026-08-31 |
 | `skills` CLI agent registry, canonical store, copy-vs-symlink, source parsing, exit codes | `github.com/vercel-labs/skills` source (`src/agents.ts`, `src/installer.ts`, `src/add.ts`, `src/source-parser.ts`, `src/skill-lock.ts`) plus real runs in isolated `HOME`s | npm `skills` **1.5.23** (repo HEAD == `latest`), 2026-08-31 |
 | `skills` CLI lockfile layout | `~/.agents/.skill-lock.json` (`"version": 3`) on this machine | observed 2026-08-31 |
@@ -1218,23 +1248,27 @@ codex and are conditional for claude.
 - **Whether `codex` will ever gain a turn cap.** **UNKNOWN.** Settled by: an
   `openai/codex` issue or release note. Nothing in 0.151.0.
 
+- **Whether `features.rollout_budget` survives the next release.**
+  `Stage::UnderDevelopment`, `default_enabled: false`, undocumented on
+  learn.chatgpt.com. **Treat as unstable.** Settled by: it appearing in the
+  public config docs, or graduating out of `UnderDevelopment`. If the Agent
+  YAML exposes a codex token budget, it needs a fallback for the day this key
+  disappears.
+
+- **codex exit code `101` on panic.** Inferred from Rust defaults plus the
+  verified *absence* of `panic = "abort"` in any profile. **Not triggered.**
+  Low stakes: it is non-zero, so the control plane classifies it as a failure
+  either way.
+
+- **codex behaviour on a second SIGINT.** The handler is a one-shot
+  `tokio::signal::ctrl_c()` task; a second Ctrl-C is plausibly swallowed rather
+  than killing the process. **UNVERIFIED.** Irrelevant to us — we send SIGTERM,
+  which has no handler at all.
+
 - **Whether a codex `Stop` hook can hard-terminate a run.** The binary contains
   `continue` / `stopReason` handling for `Stop`, and explicitly rejects
   `continue:false` for `PreToolUse`. Whether `Stop` + `continue:false` ends the
-  process (as opposed to preventing the agent from stopping) is **UNKNOWN**.
-  Settled by: a 20-line hook experiment, ~5 minutes.
-
-- **Whether `codex exec` ever exits with something other than 0/1/2/143.**
-  Verified empirically for those four (success, `turn.failed`, bad argv,
-  SIGTERM). A complete enumeration from the Rust source was **not** obtained.
-  Settled by: grepping `std::process::exit` / `ExitCode` in `codex-rs/exec/` and
-  `codex-rs/cli/` at the 0.151.0 tag. Low risk — the four cover our cases.
-
-- **The complete `codex --json` item-type list.** Observed `agent_message`,
-  `command_execution`, `file_change`, `error`. The docs also list `reasoning`,
-  `mcp_tool_call`, `web_search`, `plan_update`. Not exercised, so their exact
-  field shapes are **UNKNOWN**. Settled by: a run that uses each, or the Rust
-  `ThreadItem` enum.
+  process is **UNKNOWN**. Moot if we take the recommended option 1 (time kill).
 
 - **`OPENAI_API_KEY` in codex.** The string is in the binary and the public docs
   mention it, but it demonstrably does not authenticate `codex exec` in

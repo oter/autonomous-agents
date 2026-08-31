@@ -68,9 +68,10 @@ conversation before the map existed — but they bind every ticket below.
 - **One git credential** (charting): a fine-grained PAT with a repository
   allowlist, shared by the Journal push and the work push. Not deploy keys —
   those are inherently one per repository, which contradicts "one key".
-- **Limits use what already exists** (charting): time is a container kill via a
-  context deadline; turns pass through to the CLI's own flag. No custom
-  accounting.
+- **Limits use what already exists** (charting, ~~turns~~ **corrected by ticket
+  01**): time is a container kill via a context deadline. The turn half is dead —
+  neither CLI has a usable turn abstraction, so the limit is a **token budget**.
+  Still no custom accounting.
 - **Split route surface** (charting): `/hooks/*` is public and guarded by
   per-Agent HMAC or bearer auth; the UI and API are private-network only, plus
   basic auth. External SaaS cannot reach a private network, so the webhook
@@ -113,12 +114,30 @@ conversation before the map existed — but they bind every ticket below.
   Teardown gains two constraints that have nothing to do with SSH, both on ticket
   06: `agent & wait $!`, and an internal self-limit.
 
+- **[Neither CLI has a usable turn limit](issues/01-headless-claude-and-codex.md)**
+  (01): `claude --max-turns` is now hidden from `--help`; `codex` has no turn,
+  step or tool-call cap at all. Both have a **token budget** instead, so that is
+  what the Agent YAML takes. Codex's is `features.rollout_budget` — verified to
+  hard-stop a run, but under development, undocumented and off by default. A
+  **codex network partition retries forever**, which promotes the time-kill from
+  policy to mandatory backstop. **Sandbox denials exit 0** and codex's structured
+  error codes are flattened to a string in exec mode, so limit-vs-crash cannot be
+  read off `$?` — scan the event stream instead. The `--json` stream *is* rich
+  enough for the Journal (8 event types, 9 item types, schema captured). Trap for
+  Teardown: **rollout files are zstd-compressed when cold**, so a `*.jsonl` glob
+  misses them.
+
 ### Known ceiling
 
 The container holds a write credential for the Journal repository, so a Run can
 edit its own record before teardown fires. Chosen deliberately over
 control-plane capture, for the simplicity of a single push path. Revisit if the
 Journal is ever used for anything an agent has an incentive to distort.
+
+**Limit-vs-crash is not structurally distinguishable for codex in exec mode**
+(ticket 01). The error codes exist internally and are flattened to a bare string;
+recovering them means `codex app-server`. v1 reads the event stream and accepts
+the ambiguity.
 
 ## Not yet specified
 
@@ -131,8 +150,9 @@ Journal is ever used for anything an agent has an incentive to distort.
   idle watchdog. Only the browser-facing transport is still open.
 - **Failure handling for a Run.** Retry, backoff, dead-letter, alerting. Unclear
   whether v1 needs anything beyond "it's in the Journal".
-- **Cost and token accounting per Run.** Whether the CLIs report enough to make
-  this free.
+- **Cost and token accounting per Run.** Ticket 01 captured the event schema, so
+  the raw material exists; what is still open is what the Journal should record
+  and whether the two CLIs report it comparably.
 - **Agent-authored decision notes.** An `agentrun note` command that records
   intent mid-Run, on top of the mechanical stream. Deferred; additive.
 - **Secret rotation and Runner enrolment.** Re-encrypting the corpus when a

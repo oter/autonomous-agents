@@ -28,3 +28,10 @@ these and find a pattern? Design for the reader, not the writer.
   collide. Decide the strategy — pull-rebase-retry, one branch per Run, or
   something else — and make sure it cannot lose a Journal.
 - What must never appear in a Journal, and who is responsible for keeping it out.
+
+> **From ticket 01:** the `--json` stream is rich enough (8 event types, 9 item
+> types; schema in the research doc). Parser traps: `web_search` serialises `id`
+> twice, `declined` patches fold into `failed`, and `error` events carry no
+> `will_retry` so retry noise is shape-identical to a fatal error. Rollout dirs
+> are local-time while line timestamps are UTC, and `codex exec` writes
+> `history_mode: paginated` with PascalCase `TurnItem` tags.

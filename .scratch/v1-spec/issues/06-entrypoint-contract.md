@@ -37,3 +37,9 @@ exit. This is the ticket that makes "the container pushes at teardown" real.
 > running, so without this the 30s grace buys nothing and teardown never runs.
 > And a Run must enforce its own time limit internally: the control plane cannot
 > kill what it cannot reach, and an OOM kill is `SIGKILL` regardless.
+
+> **From ticket 01:** codex rollout files are **zstd-compressed when cold**, so a
+> `*.jsonl` glob at Teardown silently misses them. Sandbox denials exit `0` and
+> `error_seen` is sticky, so the outcome must be read from the event stream, not
+> `$?`. A codex network partition retries forever with no timeout — the internal
+> self-limit is mandatory, not defensive.

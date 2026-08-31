@@ -33,3 +33,9 @@ Open questions to settle while drafting:
   up without a restart?
 - What does validation reject at load time, and does one bad file take down the
   server or just its own Agent?
+
+> **From ticket 01:** the limit field is a **token budget**, not turns — neither
+> CLI has a usable turn abstraction. Codex needs `features.rollout_budget`
+> (undocumented, off by default, both sub-keys mandatory); `claude --max-turns`
+> is hidden from `--help` and may be going away. Decide how one YAML field maps
+> onto two different mechanisms, and what happens if `rollout_budget` disappears.
