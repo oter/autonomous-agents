@@ -86,3 +86,8 @@ obsolete** — it tested the `PATH` trap, which the forwarded socket removed.
 
 The answer records what was done plus any fact later work depends on: the tailnet
 IP, the socket path, the daemon and its version, and where each credential lives.
+
+> **Deferred by decision, 2026-08-31.** This ticket waits until the solution is
+> built. It is open but **not frontier** — do not treat it as takeable work. It
+> verifies the `macmini` Runner only, and implementation proceeds against `local`,
+> which is a plain unix socket on Linux.

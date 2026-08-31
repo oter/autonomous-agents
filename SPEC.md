@@ -462,7 +462,8 @@ by its strongest counterexample.
 
 ## 12. Open risks
 
-**Unverified: the `macmini` Runner.** Ticket 08 has not run. The load-bearing
+**Unverified: the `macmini` Runner.** Verification is **deliberately deferred
+until after the solution is built** — a scheduling decision, not an oversight. The load-bearing
 test is that `docker stop --time=30` through the forwarded socket delivers
 `SIGTERM`, lets the trap complete, and exits 0 rather than 137. If that fails,
 Teardown never fires on a timeout kill there. Untested alongside it: whether

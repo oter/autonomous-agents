@@ -24,6 +24,9 @@ Agent/Run distinction.
 default. `research` for anything outside this working directory. `prototype`
 when the question is "what should this look like".
 
+**Ticket 08 is deferred, not neglected.** It verifies the `macmini` Runner and
+waits until the solution is built. It is open but **not frontier**.
+
 **Standing preferences.** Prefer what already exists: the Docker API over custom
 orchestration, `filippo.io/age` over a key-management service, the CLIs' own
 flags over custom accounting, `skills` over a bespoke installer. Every ticket
