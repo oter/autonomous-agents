@@ -63,7 +63,13 @@ GET  /run/payload   → 200, the raw trigger body. `{}` for a schedule Trigger,
 POST /run/status    → {status, message, exit_code} → 204
 POST /run/secrets   → {names: [...]} → 200 {NAME: value}
                                        403 {denied: [...]}
+GET  /run/journal-urls → 200 {meta: <presigned PUT>, archive: <presigned PUT>}
 ```
+
+The fourth endpoint was added by ticket 07: Teardown fetches two presigned PUT
+URLs for object storage, so no storage credential ever enters a container. Minted
+on request rather than at spawn, so a long Run cannot outlive them. Read-only
+about the Run itself, which is why it fits.
 
 401 for an absent or bad token; 403 for denied names, or for any request from a
 Run the control plane already considers terminal; 404 for an unknown Run; 429 for

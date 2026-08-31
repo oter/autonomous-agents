@@ -61,13 +61,14 @@ conversation before the map existed — but they bind every ticket below.
   does not consume the Run's budget.
 - **Runs are ephemeral** (charting): no persistent volume in v1. Durability
   comes from the Journal.
-- **The container pushes, at teardown** (charting): an entrypoint wrapper traps
-  exit — including `SIGTERM` from a timeout kill — and commits and pushes both
-  the Journal and the Run's work. `docker stop --time=30` gives it room. The
+- **The container writes at teardown** (charting): an entrypoint wrapper traps
+  exit — including `SIGTERM` from a timeout kill — and pushes the Run's work to
+  git and uploads the Journal to object storage. `docker stop --time=30` gives it room. The
   agent is never relied on to remember.
-- **Journal shape** (charting): one private repository for all Agents, laid out
-  `<agent>/<run-id>/`, run id `20260831-201204-<agent>-<4 hex>` so that
-  filenames sort chronologically and concurrent Runs cannot collide.
+- **Journal shape** (charting, **backend replaced by ticket 07**): laid out
+  `<agent>/<run-id>/`, run id `20260831-201204-<agent>-<4 hex>` so keys sort
+  chronologically and concurrent Runs cannot collide. The **git repository is
+  dropped** — Journals go to S3-compatible object storage.
 - **Work pushes to a branch** (charting): `agents/<agent>/<run-id>`, always,
   never to `main`, no automatic pull request. Failed Runs push too.
 - **One git credential** (charting): a fine-grained PAT with a repository
@@ -205,6 +206,20 @@ conversation before the map existed — but they bind every ticket below.
   and write-only about its own status — no Run can start another, read another,
   or touch config.
 
+- **[The Journal is object storage, not git](issues/07-journal-format.md)**
+  (07): the `agentruns` repository is **dropped**. The decisive argument is
+  Teardown's budget — a git push needs a clone first, and that cost grows with
+  every Run ever recorded, while object PUTs are flat forever. This is the code
+  most likely to be racing a `SIGKILL`. Everything else follows: lifecycle rules
+  make retention configuration, deleting a leaked secret is a `DELETE` rather than
+  a history rewrite, concurrent writes need no retry at all, and `ListObjects`
+  **is** the index. Two objects per Run — a small separately-fetchable
+  `meta.json` so metadata greps across a thousand Runs without unpacking any, and
+  `run.tar.zst` for the rest. Access is **presigned PUTs minted at Teardown**, so
+  no storage credential enters a container and no Run can overwrite another's
+  record. `terminal_reason` is read from the **event stream, not `$?`**. The work
+  branch stays git — it is real code.
+
 ### Known ceiling
 
 The container holds a write credential for the Journal repository, so a Run can
@@ -222,6 +237,12 @@ channel design changes that.
 
 **Secrets need the control plane reachable.** A Run continues working through an
 outage, but any command needing a secret fails until the link returns.
+
+**Nothing scrubs secrets out of a Journal.** `dsecrets` keeps plaintext out of
+the agent's environment, but an agent that deliberately echoes a value puts it in
+the event stream, and nothing in the container knows the values to redact.
+Accepted: private bucket, and the first thing to revisit if the Journal is ever
+shared.
 
 **Limit-vs-crash is not structurally distinguishable for codex in exec mode**
 (ticket 01). The error codes exist internally and are flattened to a bare string;
@@ -243,8 +264,12 @@ the ambiguity.
   and whether the two CLIs report it comparably.
 - **Agent-authored decision notes.** An `agentrun note` command that records
   intent mid-Run, on top of the mechanical stream. Deferred; additive.
-- **Secret rotation and Runner enrolment.** Re-encrypting the corpus when a
-  Runner is added or a key is rotated.
+- **Secret rotation.** Re-encrypting the corpus when the master key rotates.
+  Runner enrolment is no longer part of this — ADR-0003 left the control plane as
+  the only holder of key material.
+- **Journal retention.** Deferred at ticket 07, and no longer hard: object
+  lifecycle rules express it as configuration. Choosing the policy needs data this
+  system has not produced yet.
 - **Chained Runs.** One Run triggering another. Suspected to be out of scope but
   not yet ruled.
 - **Prompt templating.** Deferred at charting in favour of the payload file;

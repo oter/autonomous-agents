@@ -234,3 +234,27 @@ is what allows it to push even if the agent has wedged its own user session.
 
 The container needs `--cap-add NET_ADMIN` at create. That is the only capability
 added, and it is dropped before the agent starts.
+
+### Amended by ticket 07
+
+**The Journal goes to object storage, not git.** The `agentruns` repository is
+dropped, so `push_journal` in the sketch above is wrong. Teardown instead:
+
+```sh
+  push_work && w=pushed || w=failed        # still git — this is real code
+  jq -n ... > "$JOURNAL/meta.json"
+  tar --zstd -cf /run/run.tar.zst -C "$JOURNAL" .
+  urls=$(api "$CONTROL_PLANE_URL/run/journal-urls")   # two presigned PUTs
+  curl -fsS -T "$JOURNAL/meta.json"  "$(echo "$urls" | jq -r .meta)"
+  curl -fsS -T /run/run.tar.zst      "$(echo "$urls" | jq -r .archive)"
+```
+
+The **work-first, Journal-last** order is unchanged and the reasoning is
+unchanged: `meta.json` records whether the work push succeeded.
+
+Teardown gets materially safer as a result. A git push needed a clone whose cost
+grows with every Run ever recorded; two PUTs are flat forever, which matters
+because this is the code most likely to be racing a `SIGKILL`.
+
+No storage credential enters the container — the presigned URLs are minted when
+Teardown starts, so a long Run cannot outlive them.
