@@ -1,0 +1,45 @@
+# Deployment-level configuration. Nothing here belongs to any one Agent.
+# Lives outside the agents/ directory and is not hot-reloaded.
+
+listen:
+  hooks: ":8080"     # PUBLIC. HMAC/bearer per Agent, nothing else.
+  ui:    ":8081"     # PRIVATE network only, plus basic auth below.
+
+ui:
+  username: oter
+  password_bcrypt: "$2a$12$PLACEHOLDERPLACEHOLDERPLACEHOLDERPLACEHOLDER"
+
+agents_dir: ./agents
+# ?? No hot reload in v1. A change needs a redeploy — which in Coolify is the
+# reload. Skips fsnotify and the "what about in-flight Runs" question entirely.
+# ?? A bad Agent file fails the WHOLE startup rather than quarantining itself.
+# Config comes from reviewed git; a loudly failed deploy beats one Agent
+# silently not running. Open to argument — it does mean one typo stops
+# everything.
+
+runners:
+  local:
+    docker_host: "unix:///var/run/docker.sock"
+    max_concurrent: 6
+  macmini:
+    docker_host: "unix:///shared/macmini-docker.sock"   # autossh sidecar (ticket 10)
+    max_concurrent: 2
+# Both are plain unix sockets, so the control plane branches on nothing.
+
+image: ghcr.io/oter/agent-base:2026-08-31
+# One shared base image, both CLIs + the `skills` CLI baked in. (charting)
+
+secrets:
+  master_identity: /etc/autonomous-agents/age-master.key   # 0600, mounted
+
+journal:
+  repo: git@github.com:oter/agentruns.git     # private
+  # run id: 20260831-201204-<agent>-<4 hex>
+
+stop_grace: 90s
+# ?? NOT 30s. `claude` drains stdout before exiting, waiting up to 30s on its
+# own if the consumer reads slowly — which would eat the entire grace and leave
+# nothing for the Journal push. (ticket 01) See the ticket 04 answer: writing the
+# event stream to a FILE rather than a pipe removes the drain risk entirely, and
+# also removes the need to hold a log stream open across SSH. That is a ticket 06
+# decision; this value is the belt to its braces.

@@ -1,0 +1,66 @@
+# Triage inbound Linear issues. Short, cheap, runs often.
+name: linear-triage
+agent: claude          # claude | codex
+runner: local          # defaults to `local` if omitted
+
+personality: |
+  You triage incoming issues. You are terse and you do not speculate.
+  When an issue lacks a reproduction, say exactly what is missing.
+
+# Appended to the system prompt, never replacing it.
+#   claude → --append-system-prompt
+#   codex  → -c developer_instructions=   (replaces rather than appends; the
+#            semantics genuinely differ and the schema should not pretend
+#            otherwise — see ticket 04 answer)
+
+prompt: |
+  Read /run/trigger.json. It is a Linear webhook payload.
+  Decide whether the issue is actionable, and comment on it with your verdict.
+
+# Static. The payload is a file, not a template — adding a Trigger source
+# costs zero YAML edits. (charting decision)
+
+skills:
+  - vercel-labs/agent-skills --skill frontend-design
+  - https://github.com/oter/my-skills.git
+# Installed project-scoped at container start, so BOTH CLIs find them.
+# Do not use `claude --bare`: it silently disables skill discovery and the Run
+# proceeds without them. (ticket 01)
+
+secrets:
+  # age ciphertext, encrypted to the control plane's master identity.
+  # At spawn these are re-encrypted to a fresh per-Run identity. (ADR-0002)
+  ANTHROPIC_API_KEY: |
+    -----BEGIN AGE ENCRYPTED FILE-----
+    YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBQbGFjZWhvbGRlcgo=
+    -----END AGE ENCRYPTED FILE-----
+  LINEAR_API_KEY: |
+    -----BEGIN AGE ENCRYPTED FILE-----
+    YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBQbGFjZWhvbGRlcgo=
+    -----END AGE ENCRYPTED FILE-----
+# The map of names IS the Allowlist — there is no separate allowlist key,
+# because under ADR-0002 the Allowlist is "what ciphertext exists".
+# ?? Use a `|` literal block, never `>` — folded scalars mangle armored age.
+
+limits:
+  wall_clock: 15m      # the ONLY universal limit. Neither CLI has a wall clock.
+# ?? No unified token/budget key on purpose. claude caps dollars
+# (--max-budget-usd, and it overshot 350x in testing — a stop condition, not a
+# guarantee); codex caps weighted tokens via an undocumented, off-by-default,
+# under-development config key. A shared `budget:` field would be a lie.
+# CLI-specific caps go through extra_args instead:
+extra_args: ["--max-budget-usd", "0.50"]
+
+triggers:
+  - kind: webhook
+    path: /hooks/linear-triage
+    auth:
+      scheme: hmac_sha256
+      header: Linear-Signature
+      encoding: hex
+      secret: |
+        -----BEGIN AGE ENCRYPTED FILE-----
+        YWdlLWVuY3J5cHRpb24ub3JnL3YxIFBsYWNlaG9sZGVyCg==
+        -----END AGE ENCRYPTED FILE-----
+
+max_concurrent: 1      # default

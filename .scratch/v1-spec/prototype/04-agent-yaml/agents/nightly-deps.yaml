@@ -1,0 +1,54 @@
+# Scheduled dependency bump. Runs on the Mac mini, pushes a branch.
+name: nightly-deps
+agent: codex
+runner: macmini
+
+personality: |
+  You are a careful maintenance engineer. You make the smallest change that
+  works and you never touch unrelated code.
+
+prompt: |
+  Update dependencies in the checked-out repository to their latest compatible
+  versions. Run the test suite. If anything fails, revert that dependency and
+  note why in your final message.
+
+repos:
+  - url: git@github.com:oter/some-service.git
+    path: workspace          # cloned to /run/workspace
+# ?? Is `repos` an Agent-level field at all, or does the agent clone things
+# itself from its prompt? Charting said "the agent clones what it needs, which
+# keeps the control plane out of the git business". But teardown has to push a
+# work branch, so SOMETHING has to know which checkout is the work. Declaring it
+# here is the smaller lie. Open.
+
+skills: []
+
+secrets:
+  CODEX_API_KEY: |
+    -----BEGIN AGE ENCRYPTED FILE-----
+    YWdlLWVuY3J5cHRpb24ub3JnL3YxIFBsYWNlaG9sZGVyCg==
+    -----END AGE ENCRYPTED FILE-----
+  GIT_PAT: |
+    -----BEGIN AGE ENCRYPTED FILE-----
+    YWdlLWVuY3J5cHRpb24ub3JnL3YxIFBsYWNlaG9sZGVyCg==
+    -----END AGE ENCRYPTED FILE-----
+# NOTE: codex reads CODEX_API_KEY, *not* OPENAI_API_KEY. (ticket 01)
+
+limits:
+  wall_clock: 90m
+extra_args: []
+# codex has no dollar cap and no turn cap. Its only hard stop is
+# features.rollout_budget, which is Stage::UnderDevelopment and off by default.
+# For this Agent the wall clock is the only real limit — which is exactly why
+# the container kill is mandatory rather than defensive. (tickets 01, 03)
+
+triggers:
+  - kind: schedule
+    cron: "0 3 * * *"
+    timezone: Europe/Berlin
+    catch_up: false
+# ?? catch_up: false means ticks missed while the control plane was down are
+# skipped, not replayed. Default, and the safe one — a redeploy should not
+# stampede. Set true only for Agents that are genuinely idempotent.
+
+max_concurrent: 1

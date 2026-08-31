@@ -1,7 +1,7 @@
 # The Agent YAML schema, and the control-plane config
 
 Type: prototype
-Status:
+Status: claimed
 Blocked by: 01, 02
 
 ## Question

@@ -1,0 +1,64 @@
+# Review inbound PRs. Bursty, so it runs several at once.
+name: github-pr-review
+agent: claude
+runner: local
+
+personality: |
+  You review pull requests for correctness bugs only. You do not comment on
+  style. If you find nothing, you say so in one line.
+
+prompt: |
+  Read /run/trigger.json — a GitHub pull_request webhook payload.
+  Review the diff and post your findings as a single PR comment.
+
+repos:
+  - url: git@github.com:oter/some-service.git
+    path: workspace
+    ref: "{{ trigger }}"
+# ?? This is the one place a template is tempting: the PR's head SHA lives in
+# the payload. Charting ruled templating out. Alternatives: clone default branch
+# and let the agent fetch the ref itself from /run/trigger.json (no templating,
+# one extra agent step), or add exactly one blessed interpolation. Open, and it
+# is the strongest argument against the no-templating decision so far.
+
+skills:
+  - oter/review-skills --skill correctness
+
+secrets:
+  ANTHROPIC_API_KEY: |
+    -----BEGIN AGE ENCRYPTED FILE-----
+    YWdlLWVuY3J5cHRpb24ub3JnL3YxIFBsYWNlaG9sZGVyCg==
+    -----END AGE ENCRYPTED FILE-----
+  GIT_PAT: |
+    -----BEGIN AGE ENCRYPTED FILE-----
+    YWdlLWVuY3J5cHRpb24ub3JnL3YxIFBsYWNlaG9sZGVyCg==
+    -----END AGE ENCRYPTED FILE-----
+
+limits:
+  wall_clock: 30m
+extra_args: ["--max-budget-usd", "2.00"]
+
+triggers:
+  - kind: webhook
+    path: /hooks/gh-pr
+    auth:
+      scheme: hmac_sha256
+      header: X-Hub-Signature-256
+      encoding: hex
+      secret: |
+        -----BEGIN AGE ENCRYPTED FILE-----
+        YWdlLWVuY3J5cHRpb24ub3JnL3YxIFBsYWNlaG9sZGVyCg==
+        -----END AGE ENCRYPTED FILE-----
+  - kind: webhook
+    path: /hooks/gh-pr-manual
+    auth:
+      scheme: bearer
+      header: Authorization
+      secret: |
+        -----BEGIN AGE ENCRYPTED FILE-----
+        YWdlLWVuY3J5cHRpb24ub3JnL3YxIFBsYWNlaG9sZGVyCg==
+        -----END AGE ENCRYPTED FILE-----
+# Two triggers, different auth. The Run is told which one fired via
+# TRIGGER_KIND / TRIGGER_NAME in its environment, alongside /run/trigger.json.
+
+max_concurrent: 4
