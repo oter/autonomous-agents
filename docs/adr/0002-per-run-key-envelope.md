@@ -68,3 +68,13 @@ not a containment one. This was already true of the Broker design.
 measured `sops exec-env` orphaning its child on `SIGTERM`; the same bug in
 `dsecrets` would silently break Teardown and lose the Journal of every timed-out
 Run.
+
+**2026-08-31, from ticket 05.** The model credential is an accepted exception.
+`ANTHROPIC_API_KEY` / `CODEX_API_KEY` must sit in plaintext in the agent
+process's own environment, because the CLI itself consumes it; wrapping the CLI
+in `dsecrets` changes nothing, since the CLI *is* the agent and
+`/proc/self/environ` reaches it either way. The claim this ADR supports is
+therefore the narrower one: **an agent can always read the model credential it is
+currently using, and everything else stays ciphertext.** The alternative — a
+proxy that injects auth on the way out — is a whole component for one key whose
+blast radius is spend the Run is already making.

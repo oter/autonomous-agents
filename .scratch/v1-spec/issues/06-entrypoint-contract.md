@@ -44,3 +44,9 @@ exit. This is the ticket that makes "the container pushes at teardown" real.
 > push. Writing to a file also removes the need to hold a log stream open across
 > SSH, which ticket 03 found has no liveness detection. `stop_grace` is 90s.
 > Live UI logs become best-effort and losing them costs nothing.
+
+> **From ticket 05:** the base image needs `age` and `jq`. The entrypoint sets
+> `DSECRETS_ENVELOPE` and `DSECRETS_NAMES`, and mounts the per-Run identity at
+> `/run/dsecrets/identity` (0400) on a **tmpfs** so it never reaches a layer or a
+> volume. The identity must survive for the whole Run — the agent calls
+> `dsecrets` throughout, not once at startup.

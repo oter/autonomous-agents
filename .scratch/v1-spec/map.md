@@ -156,6 +156,17 @@ conversation before the map existed — but they bind every ticket below.
   default. **No hot reload**, and a bad file **fails the whole startup**.
   Prototype: [`prototype/04-agent-yaml/`](prototype/04-agent-yaml/).
 
+- **[`dsecrets` is a shell script, not a daemon or a Go binary](issues/05-broker-protocol.md)**
+  (05): `dsecrets NAME[,NAME...] -- cmd`, ~20 lines of POSIX shell over `age -d`
+  and `jq`, ending in `exec` — so signals reach the child because nothing is left
+  in the way, making ticket 02's `sops exec-env` orphaning bug structurally
+  impossible. Secrets travel as **one `DSECRETS_ENVELOPE`** (a single age
+  ciphertext over a flat JSON object) plus plaintext `DSECRETS_NAMES`. Identity
+  at `/run/dsecrets/identity`, 0400, tmpfs, kept for the Run's life. **No file
+  sink and no decrypt-everything mode.** `age` and `jq` join the base image.
+  Accepted hole: the **model credential is plaintext in the agent's own
+  environment**, because the CLI needs it — recorded in ADR-0002.
+
 ### Known ceiling
 
 The container holds a write credential for the Journal repository, so a Run can
