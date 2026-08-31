@@ -220,6 +220,23 @@ conversation before the map existed — but they bind every ticket below.
   record. `terminal_reason` is read from the **event stream, not `$?`**. The work
   branch stays git — it is real code.
 
+- **[The v1 spec](issues/09-assemble-v1-spec.md)** (09): written to
+  [`SPEC.md`](../../SPEC.md) at the repo root, plus
+  [ADR-0004](../../docs/adr/0004-the-container-writes-its-own-journal.md) (the
+  container writes its own Journal) and
+  [ADR-0005](../../docs/adr/0005-journals-in-object-storage.md) (object storage,
+  not git). The route split and the shared base image were considered for ADRs
+  and rejected as unsurprising; the forwarded-socket transport was the closest
+  call and failed the hard-to-reverse test. Fog swept: cost accounting graduated,
+  chained Runs moved to out of scope, and the remainder are genuine later efforts
+  listed in §11 of the spec so an implementer knows they were decided against
+  rather than missed.
+
+  **The destination is reached.** Nothing is left to decide before someone builds
+  this. Ticket 08 stays open and is not a blocker — it verifies the `macmini`
+  Runner only, and its findings can produce macmini-local rework, never a
+  redesign.
+
 ### Known ceiling
 
 The container holds a write credential for the Journal repository, so a Run can
@@ -259,9 +276,6 @@ the ambiguity.
   `Since`, de-duplicate at the boundary, and run an idle watchdog.
 - **Failure handling for a Run.** Retry, backoff, dead-letter, alerting. Unclear
   whether v1 needs anything beyond "it's in the Journal".
-- **Cost and token accounting per Run.** Ticket 01 captured the event schema, so
-  the raw material exists; what is still open is what the Journal should record
-  and whether the two CLIs report it comparably.
 - **Agent-authored decision notes.** An `agentrun note` command that records
   intent mid-Run, on top of the mechanical stream. Deferred; additive.
 - **Secret rotation.** Re-encrypting the corpus when the master key rotates.
@@ -270,8 +284,6 @@ the ambiguity.
 - **Journal retention.** Deferred at ticket 07, and no longer hard: object
   lifecycle rules express it as configuration. Choosing the policy needs data this
   system has not produced yet.
-- **Chained Runs.** One Run triggering another. Suspected to be out of scope but
-  not yet ruled.
 - **Prompt templating.** Deferred at charting in favour of the payload file;
   revisit only if a real Trigger source demands it.
 
@@ -285,3 +297,5 @@ the ambiguity.
   git.
 - **Automatic pull requests or merging of agent work.** Runs push a branch and
   stop there.
+- **Chained Runs.** Ruled out at ticket 11: the Run API forbids a Run starting
+  another Run, as a security boundary rather than an unimplemented feature.
