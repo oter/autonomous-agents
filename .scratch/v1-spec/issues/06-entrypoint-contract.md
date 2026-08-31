@@ -31,3 +31,9 @@ exit. This is the ticket that makes "the container pushes at teardown" real.
 > volume; the local Runner uses a host directory. Bind-mount the *directory*, never
 > the socket file — a file mount pins the inode and a Broker restart leaves running
 > containers on `ECONNREFUSED`.
+
+> **Constraints from ticket 03:** the entrypoint must run the agent as
+> `agent & wait $!` — a shell trap does not fire while a foreground command is
+> running, so without this the 30s grace buys nothing and teardown never runs.
+> And a Run must enforce its own time limit internally: the control plane cannot
+> kill what it cannot reach, and an OOM kill is `SIGKILL` regardless.

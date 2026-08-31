@@ -2,7 +2,7 @@
 
 Type: task
 Status:
-Blocked by: 03
+Blocked by: 03, 10
 
 ## Question
 
@@ -34,3 +34,10 @@ rather than getting worked around.
 > volume; the local Runner uses a host directory. Bind-mount the *directory*, never
 > the socket file — a file mount pins the inode and a Broker restart leaves running
 > containers on `ECONNREFUSED`.
+
+> **From ticket 03:** §7 of
+> [`research/03-docker-sdk-over-ssh.md`](../research/03-docker-sdk-over-ssh.md)
+> has 27 numbered commands to run on the real Mac mini, grouped A–E. Run group A
+> first — it settles the `PATH` trap, which is the default failure, not an edge
+> case. Blocked additionally by ticket 10: do not provision a daemon before the
+> daemon has been chosen.

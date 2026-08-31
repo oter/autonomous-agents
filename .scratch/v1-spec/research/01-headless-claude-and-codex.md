@@ -17,15 +17,18 @@ Date: 2026-08-31.
 1. **`turns` does not pass through to a CLI flag for both.** `claude` has
    `--max-turns` (hidden from `--help` in 2.1.251 but present and working, and
    still documented in the CLI reference). **`codex exec` has no turn, step, or
-   tool-call cap at all** — no flag, no `config.toml` key, no env var. The
-   charting decision "turns pass through to the CLI's own flag" holds for
-   `claude` only. See [Limit flags](#3-limit-flags).
+   tool-call cap** — confirmed by `--help`, by `strings`, and by a repo-wide
+   grep of the source at tag `rust-v0.151.0`. The charting decision "turns pass
+   through to the CLI's own flag" holds for `claude` only.
+   See [Limit flags](#3-limit-flags).
 
-2. **`claude` has a better limit than turns: `--max-budget-usd`.** It caps
-   dollars, not round-trips, which is what we actually care about, and it exits
-   with a distinguishable subtype. `codex` has no equivalent. Suggest the Agent
-   YAML express limits as an optional per-CLI block rather than a single
-   `turns:` field.
+2. **Both CLIs do have a *budget* limit, and it's the better abstraction.**
+   `claude`: `--max-budget-usd` (dollars). `codex`: `-c
+   features.rollout_budget.enabled=true -c features.rollout_budget.limit_tokens=N`
+   (weighted tokens) — verified terminating a run mid-task. Neither is a turn
+   count. Recommend the Agent YAML express limits as an optional per-CLI block,
+   not a single `turns:` field. Caveat: codex's is `Stage::UnderDevelopment`
+   and off by default.
 
 3. **`claude --bare` and Skills do not mix.** Observed: `--bare` sees **zero**
    skills — not from `~/.claude/skills/`, and not from the cwd's own
@@ -99,12 +102,13 @@ shared key would be a lie.
 | Final message to a file | no | `-o <FILE>` |
 | System prompt override | `--system-prompt[-file]`, `--append-system-prompt[-file]` | `-c developer_instructions="..."`, or `AGENTS.md` in the workspace |
 | Turn cap | `--max-turns <n>` (hidden but works) | ⚠ **none** |
-| Dollar cap | `--max-budget-usd <amt>` | ⚠ none |
-| Wall-clock cap | none | none |
+| Budget cap | `--max-budget-usd <amt>` (dollars) | ⚠ `-c features.rollout_budget.*` (weighted tokens, unstable, off by default) |
+| Wall-clock cap | none | none — and a network partition retries **forever** |
 | Cost reported | ✅ `total_cost_usd` + per-model | ⚠ tokens only |
 | Auth env var | `ANTHROPIC_API_KEY` | ⚠ `CODEX_API_KEY` (**not** `OPENAI_API_KEY`) |
 | State dir override | `CLAUDE_CONFIG_DIR` | `CODEX_HOME` (+ `CODEX_SQLITE_HOME`) |
-| Ephemeral state | `--no-session-persistence` | `--ephemeral` (sessions only; SQLite still written) |
+| Ephemeral state | `--no-session-persistence` | `--ephemeral` — no rollout recorder at all (SQLite state still written) |
+| Exit on SIGINT | (turn ends, session resumable) | ⚠ **1**, and the stream stops with **no terminal event** |
 | Skills: personal | `~/.claude/skills` | `$CODEX_HOME/skills`, `$HOME/.agents/skills` |
 | Skills: project | `<cwd..root>/.claude/skills` | `<cwd>/.codex/skills`, `<cwd>/.agents/skills` |
 | Reduced/CI mode | `--bare` — ⚠ disables skill discovery | `--ignore-user-config` — does not affect skills |
@@ -373,11 +377,60 @@ Exit code 1. Note there are **two distinct error carriers**: a top-level
 (warning-level, non-fatal — the run continued past it). A parser must handle
 both.
 
-Event types observed in 0.151.0: `thread.started`, `turn.started`,
-`turn.completed`, `turn.failed`, `item.started`, `item.completed`, `error`.
-Item types observed: `agent_message`, `command_execution`, `file_change`,
-`error`. The docs additionally list `reasoning`, `mcp_tool_call`, `web_search`,
-and `plan_update` as item types; those were not exercised here.
+**Complete schema**, from `codex-rs/exec/src/exec_events.rs` at tag
+`rust-v0.151.0` (internally tagged, `#[serde(tag = "type")]`, one `println!` per
+event). There are exactly **8** event types and **9** item types:
+
+| event `type` | fields |
+| --- | --- |
+| `thread.started` | `thread_id: String` |
+| `turn.started` | *(none — emits `{"type":"turn.started"}`)* |
+| `turn.completed` | `usage: {input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens, reasoning_output_tokens}` |
+| `turn.failed` | `error: {message: String}` |
+| `item.started` | `item: ThreadItem` |
+| `item.updated` | `item: ThreadItem` — **only ever emitted for `todo_list`** |
+| `item.completed` | `item: ThreadItem` |
+| `error` | `message: String` |
+
+| item `type` | fields |
+| --- | --- |
+| `agent_message` | `text` |
+| `reasoning` | `text` (summary only — see below) |
+| `command_execution` | `command`, `aggregated_output`, `exit_code` (nullable), `status: in_progress\|completed\|failed\|declined` |
+| `file_change` | `changes: [{path, kind: add\|delete\|update}]`, `status` |
+| `mcp_tool_call` | `server`, `tool`, `arguments`, `result`, `error`, `status` |
+| `collab_tool_call` | `tool`, `sender_thread_id`, `receiver_thread_ids`, `prompt`, `agents_states`, `status` |
+| `web_search` | `id`, `query`, `action` |
+| `todo_list` | `items: [{text, completed}]` |
+| `error` | `message` |
+
+Every top-level field is always present — no `Option`, no
+`skip_serializing_if` at the event level. `ThreadItem.id` is a synthetic
+counter (`item_0`, `item_1`, …), **not** a model-assigned id.
+
+Parser gotchas, all from source:
+
+- `agent_message` and `reasoning` **never** get an `item.started` — completed-only.
+- `web_search` serialises `id` **twice** (outer `ThreadItem.id` then the
+  flattened inner `WebSearchItem.id`). Last-wins is parser-dependent.
+- A **declined** patch is folded into `status: "failed"` — you cannot tell a
+  denied edit from a broken one.
+- `error` events carry **no `will_retry` flag**, so the five `"Reconnecting...
+  3/5"` lines are shape-identical to a fatal error. **Only `turn.failed` is
+  terminal.**
+- The published TypeScript SDK mirror (`sdk/typescript/src/items.ts`) is stale —
+  missing `declined`, `collab_tool_call`, and `WebSearchItem.action`. Trust
+  `exec_events.rs`.
+
+**Structured error codes exist internally and are thrown away.**
+`app-server-protocol/.../shared.rs` defines `CodexErrorInfo` with machine-readable
+variants — `SessionBudgetExceeded`, `UsageLimitExceeded`, `RateLimitExceeded`,
+`ContextWindowExceeded`, `Unauthorized`, `SandboxError`, `ServerOverloaded`,
+`InternalServerError`. The `exec` mapper explicitly drops `codex_error_info` and
+flattens everything to `ThreadErrorEvent { message: String }`. **If we ever want
+structured limit-vs-crash discrimination from codex, `codex exec --json` cannot
+give it — that needs `codex app-server` (JSON-RPC) instead.** Out of scope for
+v1; worth knowing the ceiling.
 
 **What is missing versus Claude's stream:**
 
@@ -387,9 +440,13 @@ and `plan_update` as item types; those were not exercised here.
 - **No cost.** Only token counts. Claude gives `total_cost_usd` and a per-model
   breakdown. (This bears directly on map.md's open item "Cost and token
   accounting per Run": free for `claude`, tokens-only for `codex`.)
-- **Reasoning content is absent from `--json`** in what was observed
-  (`reasoning_output_tokens: 26` was reported, but no reasoning item was
-  emitted). It *is* in the on-disk rollout (`response_item` / `reasoning`).
+- **Reasoning is summary-only, and silently omitted when the summary is empty.**
+  My run reported `reasoning_output_tokens: 26` and emitted no `reasoning` item
+  at all. The JSONL gate is hardcoded to summaries and suppresses empty ones;
+  `show_raw_agent_reasoning` has **zero effect** on `--json` (it only touches
+  the human-output processor). The raw/encrypted chain of thought is in the
+  rollout file (`response_item.reasoning.encrypted_content`, ~3 KB in a sampled
+  run) and nowhere else.
 - **No session/init event** listing tools, model, or skills. `thread.started`
   carries only `thread_id`.
 
@@ -487,52 +544,118 @@ exit code 1
 $0.0353 against a $0.0001 cap — a 350x overshoot. It is a stop condition, not a
 guarantee. Size it accordingly.
 
-### `codex`: there is no turn cap. Say it loudly.
+### `codex`: no turn cap — but there *is* a token budget that hard-stops a run
 
-Checked four ways, all negative:
+**No turn / step / round-trip / tool-call cap exists.** Confirmed four ways:
 
-1. `codex exec --help` for 0.151.0 lists no turn/step/iteration/budget flag —
-   the full option list is reproduced in §1 above.
+1. `codex exec --help` for 0.151.0 lists no such flag — the full option list is
+   `exec/src/cli.rs:10-81` plus `utils/cli/src/shared_options.rs:10-73`, and is
+   reproduced in §1 above.
 2. `strings` on the 0.151.0 binary: no `max_turns`, `max_steps`,
-   `max_iterations`, or `tool_call_limit`. The only `max_*` config keys that
-   bound anything are `max_concurrent_threads_per_session`, `max_depth`,
-   `job_max_runtime_seconds` (all under the **subagents** config, not the main
-   run), `max_goal_token_budget` (goals feature), `model_context_window`, and
-   `model_auto_compact_token_limit` (compaction, not termination).
-3. The official non-interactive docs page state plainly: *"No explicit turn/
-   iteration limits documented."*
-4. `-c key=value` accepts arbitrary config overrides, but there is no key to
-   override.
+   `max_iterations`, `tool_call_limit`.
+3. Repo-wide grep at tag `rust-v0.151.0` for
+   `max_turns|max_steps|max_iterations|tool_call_limit|max_tool_calls|turn_limit|step_limit|max_requests`
+   returns only `tui/src/dynamic_tools.rs:91` — an unrelated "read N turns of
+   history" TUI argument.
+4. The official non-interactive docs page: *"No explicit turn/iteration limits
+   documented."*
 
-**What to do instead — three options, in order of laziness:**
+**Correction to something I would otherwise have got wrong:**
+`agents.job_max_runtime_seconds` is a **dead key** — `config/src/config_toml.rs:688-690`
+calls it *"Removed agent-job setting retained as a no-op for compatibility"*,
+and the test that pins the behaviour is literally named
+`legacy_agent_job_max_runtime_seconds_is_accepted_as_noop`. It parses and does
+nothing. Do not plan around it.
 
-1. **Rely on the container time kill that map.md already specifies.** The Run is
-   already killed by a context deadline and `docker stop --time=30`. For
-   `codex`, that is the *only* bound. This costs zero code and is the honest
-   default. Downside: a runaway `codex` Run burns its full wall-clock budget of
-   tokens rather than stopping early.
-2. **A `PreToolUse` hook that counts and denies.** codex 0.151.0 supports hooks
-   at `$CODEX_HOME/hooks.json` or `<repo>/.codex/hooks.json`, with events
-   `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`,
-   `PostToolUse`, `Stop`, `SessionEnd`, `PreCompact`, `PostCompact`,
-   `SubagentStart`, `SubagentStop`. A `PreToolUse` hook can deny a call with
-   `{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"..."}}`
-   or by exiting 2 with a reason on stderr. A ~10-line shell hook that
-   increments a counter file and denies past N gives an approximate step cap.
-   **Caveat, confirmed from the binary:** `PreToolUse hook returned unsupported
-   continue:false` — a `PreToolUse` hook *cannot terminate the run*, only refuse
-   the call. The model then sees denials and typically gives up, but it is a
-   soft stop, and it does not bound pure-reasoning turns. Also, hooks require
-   persisted trust; the container would need `--dangerously-bypass-hook-trust`.
+#### `features.rollout_budget` — the one knob that will stop a run
+
+This is a weighted-**token** budget, not a step cap, but it does terminate a
+run mid-task. Defined in `features/src/feature_configs.rs:333-350`, registered
+`features/src/lib.rs:1490-1495` (`stage: UnderDevelopment, default_enabled:
+false`), enforced `core/src/rollout_budget.rs:46-65`:
+
+```rust
+usage.output_tokens.max(0) as f64 * state.config.sampling_token_weight
+    + usage.non_cached_input() as f64 * state.config.prefill_token_weight
+...
+state.weighted_tokens_used >= state.config.limit_tokens as f64
+```
+
+Verified working end to end:
+
+```
+codex exec --skip-git-repo-check --json \
+  -c 'features.rollout_budget.enabled=true' \
+  -c 'features.rollout_budget.limit_tokens=4000' \
+  -c 'features.rollout_budget.reminder_at_remaining_tokens=[1000]' \
+  "Say ok, then run 'echo one', then 'echo two', then 'echo three', then say done."
+```
+
+It ran `echo one` and `echo two`, then:
+
+```json
+{"type":"error","message":"shared rollout token budget exhausted"}
+{"type":"turn.failed","error":{"message":"shared rollout token budget exhausted"}}
+```
+
+exit code 1. Caveats, all load-bearing:
+
+- `limit_tokens` **and** `reminder_at_remaining_tokens` are both mandatory when
+  enabled; each reminder must be `> 0` and `< limit_tokens` or config load fails
+  (`core/src/config/mod.rs:2801-2841`).
+- Weighted tokens, both weights default `1.0`. It is a cost cap, not a step cap.
+- **Shared across the session tree** — subagents draw from the same pool.
+- `Stage::UnderDevelopment`. Enabling it injects a warning item into the `--json`
+  stream (suppress with `suppress_unstable_features_warning = true`), and it can
+  change or vanish between releases.
+- The model is *told* about the budget: reminders are injected as
+  `<rollout_budget>You have N weighted tokens left…</rollout_budget>`.
+- The exit code is a plain `1` — indistinguishable from a crash without string-
+  matching `"shared rollout token budget exhausted"` (which is a `Display` impl
+  at `protocol/src/error.rs:86`, not a stable API).
+
+#### Other mechanisms — none of which bound a run
+
+| Mechanism | Bounds the run? |
+| --- | --- |
+| `model_auto_compact_token_limit` (+ `_scope`) | **No** — *extends* runs by compacting |
+| `model_context_window` | No — overflow triggers a compaction retry loop that drops oldest items |
+| `features.token_budget` | **No** — reminder text and fallback prompts only |
+| `agents.max_concurrent_threads_per_session`, `agents.max_depth` | Caps parallel/nested subagents, not the parent's length |
+| per-command `SandboxErr::Timeout` | Bounds one tool call |
+| `agents.job_max_runtime_seconds` | **No-op** (see above) |
+
+**What to do — three options, in order of laziness:**
+
+1. **Rely on the container time kill that map.md already specifies.** This is
+   the recommendation. It costs zero code, and it is *mandatory anyway*: a
+   codex run against an unreachable endpoint retries **forever**
+   (`{"type":"error","message":"Reconnecting... waiting for network"}` in a
+   loop; `ConnectionFailed` is classified retryable at
+   `protocol/src/error.rs:403`). A 401 gives up after 5 attempts, but a network
+   partition does not. **Any caller must impose its own wall clock.**
+2. **`-c features.rollout_budget.*`** if a token ceiling per Run is wanted. It
+   works today and is the closest analogue to claude's `--max-budget-usd`. Flag
+   it as an unstable dependency.
 3. **Don't model turns in the Agent YAML at all.** Model `timeout` (universal)
-   plus an optional `claude:` block for `max_turns` / `max_budget_usd`. This is
-   the recommendation: a `turns:` key that silently does nothing for half the
-   Agents is worse than no key.
+   plus an optional per-CLI limits block: `max_turns` / `max_budget_usd` for
+   claude, `rollout_budget_tokens` for codex. A shared `turns:` key that
+   silently does nothing for half the Agents is worse than no key.
+
+A `PreToolUse` hook that counts and denies is *possible* (codex 0.151.0 supports
+hooks at `$CODEX_HOME/hooks.json` or `<repo>/.codex/hooks.json`; a `PreToolUse`
+hook denies with
+`{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"..."}}`
+or exit 2 + stderr) but it is the worst option: confirmed from the binary,
+`PreToolUse hook returned unsupported continue:false` — the hook **cannot
+terminate the run**, only refuse calls, and it does not bound pure-reasoning
+turns. It also needs `--dangerously-bypass-hook-trust`. Skip it.
 
 **map.md correction needed:** *"Limits use what already exists (charting): time
 is a container kill via a context deadline; turns pass through to the CLI's own
-flag. No custom accounting."* — the second clause is true for `claude` and false
-for `codex`.
+flag. No custom accounting."* — the second clause is true for `claude` only. For
+`codex` the honest statement is "time is the only bound, optionally plus an
+unstable token budget".
 
 ---
 
@@ -582,22 +705,43 @@ command: /p-homeclaude"}`. If the Agent's prompt invokes a skill that failed to
 install, the Run reports success and does nothing. Worth a Teardown-time
 assertion.
 
-For `codex`, the discrimination is *which terminal event you got*, not a field.
-Practical classifier, all four rows observed:
+For `codex`, the discrimination is *which terminal event you got*, not a field:
 
 | Meaning | terminal event | exit |
 | --- | --- | --- |
-| finished | `turn.completed` (carries `usage` only) | 0 |
-| failed | `turn.failed` (carries `error.message`) | 1 |
-| killed at the time limit / teardown | none — stream truncates mid-`item.started` | 143 |
-| our argv is wrong | none — nothing on stdout, `clap` error on stderr | 2 |
+| finished | `turn.completed` (`usage` only) | 0 |
+| failed (model / API / auth / budget) | `turn.failed` (`error.message`) | 1 |
+| **sandbox denial** | `turn.completed` — the model works around it | **0** |
+| killed at the time limit / teardown (SIGTERM) | none — stream truncates mid-item | 143 |
+| SIGINT | **none — no terminal event at all** | 1 |
+| our argv is wrong | none — empty stdout, `clap` error on stderr | 2 |
+| panic | none | 101 (inferred, not triggered) |
+| network partition | never — retries **forever** | never exits |
 
-"Hit its limit" is not representable, because codex has no limits to hit.
+There is exactly one decision point in the source
+(`exec/src/lib.rs:1037-1145`): a boolean `error_seen`, set by a non-retryable
+top-level `error` notification or by a turn ending `Failed`/`Interrupted`, then
+`if error_seen { std::process::exit(1) }`. Consequences:
 
-Two error carriers to handle: top-level `{"type":"error","message":...}` (may
-appear repeatedly during connection retries, and does not by itself mean the run
-failed) and `item.completed` with `item.type == "error"` (a warning; the run
-continues). Only `turn.failed` is terminal.
+- **`error_seen` is sticky.** A single non-retryable `error` event makes the
+  process exit 1 **even if the turn subsequently completes successfully.**
+- **`TurnStatus::Interrupted` emits no JSON.** SIGINT produces a stream that
+  just stops, with no `turn.completed` and no `turn.failed`. Only the exit code
+  (1) distinguishes it from a SIGTERM truncation (143). SIGTERM has **no
+  handler anywhere on the `codex exec` path** — 143 is the kernel default.
+- **Sandbox denials do not fail the run.** In exec mode all approval requests
+  are auto-rejected; the denial surfaces as a failed `command_execution` item
+  that the model reasons around, and the turn still completes → exit 0. If we
+  care that a Run was blocked, we have to scan items, not `$?`.
+
+Two error carriers to handle: top-level `{"type":"error","message":...}` (which
+appears once per connection retry and does **not** by itself mean failure) and
+`item.completed` with `item.type == "error"` (a warning; the run continues).
+Only `turn.failed` is terminal.
+
+"Hit its limit" is representable only by string-matching
+`"shared rollout token budget exhausted"` on the `turn.failed` message, and only
+if `features.rollout_budget` was enabled. There is no code and no field for it.
 
 ---
 

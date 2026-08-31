@@ -100,6 +100,19 @@ conversation before the map existed — but they bind every ticket below.
   shared volume** — the two Runners diverge here. One age file per Agent, not per
   secret. ADR-0001 amended: the Broker must be name-addressed.
 
+- **[The `ssh://` Runner is not config-only](issues/03-docker-sdk-over-ssh.md)**
+  (03): the Docker Go SDK does **not** speak `ssh://` — `WithHost("ssh://...")`
+  returns no error and TCP-dials the literal string; that lives in `docker/cli`'s
+  connhelper. Docker Desktop has **no headless story** (autostart is a login
+  event, off by default; the boot request is closed and locked), so the Mac must
+  auto-login or run Colima. There is **no liveness detection** over the
+  transport — a silent stall hangs a log stream forever. And Docker Desktop runs
+  the daemon with a 2s shutdown timeout, so a Run in flight during an engine
+  restart can lose its Journal; pin ≥ 4.88.0. Two Runners still stands as a
+  decision, but the premise that it was free is dead → re-taken in ticket 10.
+  Teardown gains two constraints that have nothing to do with SSH, both on ticket
+  06: `agent & wait $!`, and an internal self-limit.
+
 ### Known ceiling
 
 The container holds a write credential for the Journal repository, so a Run can
@@ -112,8 +125,10 @@ Journal is ever used for anything an agent has an incentive to distort.
 - **What "personality" concretely is.** A system prompt string, a mounted
   `CLAUDE.md`/`AGENTS.md`, or a skill. Likely resolves inside the schema ticket,
   but may graduate on its own.
-- **Live log streaming to the UI.** Server-sent events, websockets, or polling —
-  and whether the remote Runner changes the answer.
+- **Live log streaming to the UI.** Server-sent events, websockets, or polling.
+  The remote-Runner half is answered by ticket 03 — resume with `Timestamps` plus
+  an inclusive, self-disabling `Since`, de-duplicate at the boundary, and run an
+  idle watchdog. Only the browser-facing transport is still open.
 - **Failure handling for a Run.** Retry, backoff, dead-letter, alerting. Unclear
   whether v1 needs anything beyond "it's in the Journal".
 - **Cost and token accounting per Run.** Whether the CLIs report enough to make
