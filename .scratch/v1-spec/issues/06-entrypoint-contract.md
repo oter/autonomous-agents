@@ -206,3 +206,31 @@ and entirely CLI trivia — `codex` needs `</dev/null`,
 the personality flags differ. All of it changes when the CLIs change, which is an
 image rebuild either way. In Go it would mean a control-plane redeploy every time
 a vendor renames a flag.
+
+### Amended by ticket 11
+
+**The agent runs unprivileged.** Ticket 11 restricts a Run's network egress to
+the internet plus the control plane, blocking the rest of the tailnet and the
+LAN, and enforces it with iptables **inside** the container so both Runners
+behave identically. A root agent would simply `iptables -F` and the rules would
+be decoration.
+
+So the entrypoint gains a phase, before anything else:
+
+```sh
+# Container is created with --cap-add NET_ADMIN and a non-root `agent` user.
+install_egress_rules          # allow internet + $CONTROL_PLANE_IP:$PORT,
+                              # drop 100.64/10, 10/8, 172.16/12, 192.168/16
+```
+
+and the agent is launched through `setpriv --reuid agent --regid agent --clear-groups`
+rather than directly, dropping `NET_ADMIN` with it.
+
+Consequences to carry into the spec: the workspace, `CODEX_HOME`,
+`CLAUDE_CONFIG_DIR` and the Journal directory must all be writable by `agent`;
+skill installation and `git clone` run as `agent`, so anything they need must not
+require root; and the teardown trap runs in the **root** entrypoint shell, which
+is what allows it to push even if the agent has wedged its own user session.
+
+The container needs `--cap-add NET_ADMIN` at create. That is the only capability
+added, and it is dropped before the agent starts.

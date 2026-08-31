@@ -188,6 +188,23 @@ conversation before the map existed — but they bind every ticket below.
   a vendor renaming a flag is an image rebuild rather than a control-plane
   redeploy.
 
+- **[The Run API](issues/11-the-run-api.md)** (11): three endpoints —
+  `GET /run/payload`, `POST /run/status`, `POST /run/secrets` — over **plain HTTP
+  on the Tailscale tailnet**, because WireGuard already gives encryption and
+  device identity and TLS on top would be a cert lifecycle for no added
+  protection. Token is **opaque and stored**, not a JWT, so revocation is instant.
+  A denied secret is a **403 naming the names**, never a silent omission — the
+  failure ticket 02 rejected `summon` for. Abuse is **throttled and surfaced,
+  never auto-killed**, because a killing threshold is a guess that fails by
+  killing a legitimate long Run near the end. Three missed heartbeats mark a Run
+  stale **and trigger an `Inspect`** — a gap is a hint, not a verdict — and
+  `Inspect` wins any disagreement. Runs get **internet plus the control plane and
+  nothing else** on the tailnet or LAN, enforced by iptables *inside* the
+  container so both Runners match, **which forces the agent to run unprivileged**
+  (folded back into 06). Governing principle: the API is read-only about the Run
+  and write-only about its own status — no Run can start another, read another,
+  or touch config.
+
 ### Known ceiling
 
 The container holds a write credential for the Journal repository, so a Run can
