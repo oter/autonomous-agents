@@ -4,7 +4,7 @@ Date: 2026-08-31
 
 ## Status
 
-Accepted
+Superseded by [ADR-0002](0002-per-run-key-envelope.md)
 
 ## Context
 

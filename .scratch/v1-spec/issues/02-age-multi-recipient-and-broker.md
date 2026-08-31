@@ -85,3 +85,17 @@ ADR-0001: the Broker must be *name-addressed* or its audit claim is vacuous, and
 the known ceiling is sharper than written — a Run need not wrap a command to
 capture a secret, since any same-uid sibling process can read
 `/proc/<child>/environ`.
+
+### Superseded in part
+
+The "build the Broker" verdict above was **overtaken by a later decision**, not
+by an error. [ADR-0002](../../../docs/adr/0002-per-run-key-envelope.md) removed
+the Broker in favour of a per-Run key envelope, so the survey's conclusion no
+longer applies to a component that exists.
+
+The rest of this ticket's findings survive and are load-bearing: age
+multi-recipient behaviour and ciphertext sizing, the YAML `>` folded-scalar
+footgun, one age file per Agent rather than per secret, and — most importantly —
+that **`sops exec-env` orphans its child on `SIGTERM`**, which is now a direct
+constraint on `dsecrets` rather than on a Broker. The caller-identification
+finding is moot: with a per-Run envelope there is no caller to identify.

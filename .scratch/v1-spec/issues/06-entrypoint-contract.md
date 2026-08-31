@@ -26,12 +26,6 @@ exit. This is the ticket that makes "the container pushes at teardown" real.
 - What is the contract with the control plane — how does the control plane learn
   a Run's outcome, given the container may be on the remote Runner?
 
-> **Constraint from ticket 02:** macOS cannot bind-mount a unix socket into a
-> container. The Mac mini Runner runs its Broker containerised on a shared Docker
-> volume; the local Runner uses a host directory. Bind-mount the *directory*, never
-> the socket file — a file mount pins the inode and a Broker restart leaves running
-> containers on `ECONNREFUSED`.
-
 > **Constraints from ticket 03:** the entrypoint must run the agent as
 > `agent & wait $!` — a shell trap does not fire while a foreground command is
 > running, so without this the 30s grace buys nothing and teardown never runs.

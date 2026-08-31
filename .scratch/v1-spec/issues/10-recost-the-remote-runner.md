@@ -1,7 +1,7 @@
 # Re-cost the remote Runner: keep it, and on what daemon and transport
 
 Type: grilling
-Status:
+Status: resolved
 Blocked by:
 
 ## Question
@@ -38,3 +38,49 @@ than one supervised process.
 
 Whatever is chosen, decide how thin the Runner interface has to be for the other
 option to remain a config change rather than a rewrite.
+
+## Answer
+
+**1. The remote Runner stays in v1.** Re-taken with the real cost visible and
+kept anyway.
+
+**2. The daemon on the Mac is the operator's choice**, not a design decision.
+Whichever is installed, it only supplies one value: the socket path.
+
+**3. Transport is a forwarded unix socket, not connhelper `ssh://`.** An
+`autossh` sidecar in the Coolify stack holds one supervised connection and drops
+the socket on a volume shared with the control plane:
+
+```
+autossh -M 0 -N \
+  -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+  -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new \
+  -L /shared/macmini-docker.sock:<remote-socket-path> runner@macmini
+```
+
+Both Runners then have the same shape, and the control plane branches on nothing:
+
+```yaml
+runners:
+  local:   { docker_host: "unix:///var/run/docker.sock" }
+  macmini: { docker_host: "unix:///shared/macmini-docker.sock" }
+```
+
+This deletes rows 1, 3, 4, 7, 9, 10 and 11 from §6 of the ticket 03 research: no
+`docker/cli` dependency, no custom transport, no hidden `dial-stdio`, no
+API-version negotiation flakiness, no per-connection SSH handshake, and **no
+`docker` CLI required on the Mac**, which erases the `PATH` trap — the most
+likely default failure. Liveness becomes one explicit `ServerAliveInterval`
+rather than N invisible connections with no deadlines. SSH keys and `known_hosts`
+live in the sidecar, never in the Go binary.
+
+Costs: one more container in the stack, and `AllowStreamLocalForwarding` must be
+`yes` in the Mac's `sshd_config` — it is the default.
+
+The ticket 03 research recommended starting with `ssh://` for having fewer moving
+parts. Rejected: a heavyweight module dependency plus a hand-rolled liveness
+watchdog is not fewer moving parts than one supervised process.
+
+**Still live from ticket 03, and not fixed by this transport**: the Docker
+Desktop engine-shutdown hole. If the operator installs Docker Desktop, pin it to
+≥ 4.88.0. Ticket 08 verifies.

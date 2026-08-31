@@ -43,10 +43,14 @@ conversation before the map existed — but they bind every ticket below.
 - **Two Runners** (charting): `local` (the control plane's own Docker host) and
   `macmini` (remote, reached over `ssh://`). Named once in control-plane config;
   Agents reference a Runner by name and default to `local`.
-- **Runner-local secret broker** (charting): see
-  [ADR-0001](../../docs/adr/0001-runner-local-secret-broker.md). Key material
-  lives on each Runner, never in a Run's container. Per-Agent allowlist in the
-  YAML.
+- **Per-Run key envelope** (charting, **revised**): see
+  [ADR-0002](../../docs/adr/0002-per-run-key-envelope.md), which supersedes
+  ADR-0001. At spawn the control plane re-encrypts an Agent's allowlisted secrets
+  to a **fresh identity for that Run alone** and injects the ciphertext as env
+  vars plus the identity as a file; `dsecrets` decrypts locally and `exec`s the
+  child. No Broker daemon, no socket, and the macOS bind-mount divergence
+  disappears — both Runners are identical for secrets. Extracting the key yields
+  exactly the Allowlist for one Run, which the Agent already had.
 - **age for encryption** (charting): `filippo.io/age`, multi-recipient, no cloud
   KMS. Ciphertext inline in the Agent YAML.
 - **One shared base image** (charting): both CLIs and the `skills` CLI baked in.
@@ -97,9 +101,11 @@ conversation before the map existed — but they bind every ticket below.
   orphans children on `SIGTERM`, which would silently break Teardown. Caller
   identity is a **per-Run socket in a per-Run directory**, bind-mounted (the
   directory, never the file) into only that Run's container. **macOS cannot
-  bind-mount a unix socket, so the Mac mini Runner containerises its Broker on a
-  shared volume** — the two Runners diverge here. One age file per Agent, not per
-  secret. ADR-0001 amended: the Broker must be name-addressed.
+  bind-mount a unix socket.** One age file per Agent, not per secret.
+  **The Broker verdict was later overtaken by ADR-0002**, which removed the
+  Broker entirely — but the `sops exec-env` signal bug survives as a direct
+  constraint on `dsecrets`, and the macOS finding is what made the no-daemon
+  design attractive.
 
 - **[The `ssh://` Runner is not config-only](issues/03-docker-sdk-over-ssh.md)**
   (03): the Docker Go SDK does **not** speak `ssh://` — `WithHost("ssh://...")`
@@ -127,12 +133,29 @@ conversation before the map existed — but they bind every ticket below.
   Teardown: **rollout files are zstd-compressed when cold**, so a `*.jsonl` glob
   misses them.
 
+- **[The remote Runner stays, on a forwarded socket](issues/10-recost-the-remote-runner.md)**
+  (10): re-taken with the real cost visible and kept in v1. Transport is **not**
+  connhelper `ssh://` but an `autossh` sidecar holding one supervised `ssh -L`,
+  dropping the daemon socket on a shared volume — so both Runners are plain
+  `unix://` paths and the control plane branches on nothing. Deletes seven of the
+  fourteen breakage rows and removes the need for a `docker` CLI on the Mac,
+  killing the `PATH` trap. The daemon on the Mac is the operator's choice; it
+  supplies one value, the socket path.
+
 ### Known ceiling
 
 The container holds a write credential for the Journal repository, so a Run can
 edit its own record before teardown fires. Chosen deliberately over
 control-plane capture, for the simplicity of a single push path. Revisit if the
 Journal is ever used for anything an agent has an incentive to distort.
+
+**A Run can read its own secrets.** ADR-0002 ships a per-Run age identity into
+the container, so plaintext is one command away for an agent that goes looking.
+Raised twice and accepted twice: the per-Run scoping means extracting the key
+yields only what the Allowlist already granted, and `dsecrets` still keeps
+plaintext out of the agent's own environment, which is where an accidental leak
+becomes a commit message. Per-access audit logging is the thing genuinely given
+up; it returns only with a Broker.
 
 **Limit-vs-crash is not structurally distinguishable for codex in exec mode**
 (ticket 01). The error codes exist internally and are flattened to a bare string;
