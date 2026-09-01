@@ -22,9 +22,9 @@ import (
 //	docker build -t agent-base:dev image/
 //	AA_IMAGE=agent-base:dev go test ./internal/run -run WalkingSkeleton -v
 //
-// Without a credential (CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`, or
-// ANTHROPIC_API_KEY) the trivial Run still completes end to end, with the
-// CLI's auth failure recorded as its exit code and stream.
+// Without CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) the trivial Run
+// still completes end to end, with the CLI's auth failure recorded as its
+// exit code and stream.
 func TestWalkingSkeleton(t *testing.T) {
 	image := os.Getenv("AA_IMAGE")
 	if image == "" {
@@ -104,7 +104,7 @@ func TestWalkingSkeleton(t *testing.T) {
 		if r.ExitFrom != run.FromInspect || r.Status != "finished" {
 			t.Errorf("run = %+v, want exit from inspect and a finished report", r)
 		}
-		if (os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "" || os.Getenv("ANTHROPIC_API_KEY") != "") && r.ExitCode != 0 {
+		if os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "" && r.ExitCode != 0 {
 			t.Errorf("exit code = %d, want 0 with a credential", r.ExitCode)
 		}
 		if meta := journal(t, r); meta["exit_code"] != float64(r.ExitCode) || meta["agent"] != "hello" {

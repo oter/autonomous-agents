@@ -60,15 +60,12 @@ func (s *Spawner) Start(ctx context.Context, a config.Agent) (Run, error) {
 	}
 	// ponytail: the model credential is passed through from the control
 	// plane's own environment until ticket 06 decrypts it from the Allowlist.
-	// claude runs on the Claude subscription (`claude setup-token` →
-	// CLAUDE_CODE_OAUTH_TOKEN), with an API key as the alternative.
-	for _, name := range map[string][]string{
-		"claude": {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"},
-		"codex":  {"CODEX_API_KEY"},
-	}[a.Kind] {
-		if v := os.Getenv(name); v != "" {
-			env = append(env, name+"="+v)
-		}
+	// claude runs on the Claude subscription only (`claude setup-token` →
+	// CLAUDE_CODE_OAUTH_TOKEN). ANTHROPIC_API_KEY is deliberately never
+	// forwarded: the CLI would prefer it and bill API credits instead.
+	credentialVar := map[string]string{"claude": "CLAUDE_CODE_OAUTH_TOKEN", "codex": "CODEX_API_KEY"}[a.Kind]
+	if v := os.Getenv(credentialVar); v != "" {
+		env = append(env, credentialVar+"="+v)
 	}
 
 	r.Container, err = client.Create(ctx, r.ID, docker.ContainerConfig{

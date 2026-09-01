@@ -84,10 +84,11 @@ func TestStartCreatesContainerAndRecordsInspectOutcome(t *testing.T) {
 		Store:           store,
 		PollInterval:    10 * time.Millisecond,
 	}
-	// The subscription token is what claude Runs use; the API key stays as
-	// the alternative. Both are copied in when set.
+	// claude Runs use the subscription token only. An API key in the control
+	// plane's environment must never reach a container: the CLI would prefer
+	// it and bill API credits.
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
-	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-api03-must-not-leak")
 	agent := config.Agent{
 		Name: "hello", Kind: "claude", Prompt: "Say OK.", Personality: "Terse.",
 		Runner: "local", ExtraArgs: []string{"--max-turns", "3"},
@@ -132,7 +133,7 @@ func TestStartCreatesContainerAndRecordsInspectOutcome(t *testing.T) {
 	}
 
 	if slices.ContainsFunc(env, func(e string) bool { return strings.HasPrefix(e, "ANTHROPIC_API_KEY=") }) {
-		t.Errorf("empty credential must not be passed: %q", env)
+		t.Errorf("ANTHROPIC_API_KEY must never be forwarded to a Run: %q", env)
 	}
 
 	deadline := time.Now().Add(2 * time.Second)

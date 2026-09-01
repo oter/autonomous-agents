@@ -70,17 +70,18 @@ is the demo, kept as a guarded test. Both paths pass:
 
 Unverified for lack of a credential in this session: the exit-0 path of the
 EXIT trap (traced, not run) and a real completion of the prompt. claude Runs
-use the Claude subscription: `claude setup-token` mints a long-lived token,
-exported as `CLAUDE_CODE_OAUTH_TOKEN` in the control plane's environment
-(`ANTHROPIC_API_KEY` works as the alternative). With either set the test
-asserts exit 0 as well.
+use the Claude subscription only: `claude setup-token` mints a long-lived
+token, exported as `CLAUDE_CODE_OAUTH_TOKEN` in the control plane's
+environment. `ANTHROPIC_API_KEY` is never forwarded (the CLI would prefer it
+and bill API credits), and the control plane itself makes no Anthropic API
+calls. With the token set the test asserts exit 0 as well.
 
 ### Deliberate shortcuts, all marked `ponytail:` in code
 
 - Run records are in memory; forgotten on restart.
-- The model credential (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`
-  for claude, `CODEX_API_KEY` for codex) is copied from the control plane's
-  own environment into Runs of that CLI kind. Ticket 06 must delete this, not
+- The model credential (`CLAUDE_CODE_OAUTH_TOKEN` for claude,
+  `CODEX_API_KEY` for codex) is copied from the control plane's own
+  environment into Runs of that CLI kind. Ticket 06 must delete this, not
   keep it as a fallback.
 - Exited containers are kept so the Journal can be read with `docker cp`;
   ticket 05 removes them after upload. They accumulate until then.
