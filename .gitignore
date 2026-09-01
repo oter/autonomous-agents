@@ -1,0 +1,7 @@
+# Private session memory — never publish
+.remember/
+
+# Key material must never enter this repo; only age ciphertext belongs here
+*.key
+*.pem
+age-master*
