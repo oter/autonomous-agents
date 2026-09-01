@@ -14,7 +14,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Image tag = git tag; workflow_dispatch falls back to today's date.
       - id: tag
         run: |
