@@ -84,6 +84,10 @@ func TestStartCreatesContainerAndRecordsInspectOutcome(t *testing.T) {
 		Store:           store,
 		PollInterval:    10 * time.Millisecond,
 	}
+	// The subscription token is what claude Runs use; the API key stays as
+	// the alternative. Both are copied in when set.
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
+	t.Setenv("ANTHROPIC_API_KEY", "")
 	agent := config.Agent{
 		Name: "hello", Kind: "claude", Prompt: "Say OK.", Personality: "Terse.",
 		Runner: "local", ExtraArgs: []string{"--max-turns", "3"},
@@ -120,10 +124,15 @@ func TestStartCreatesContainerAndRecordsInspectOutcome(t *testing.T) {
 		"RUN_ID=" + r.ID, "RUN_TOKEN=" + r.Token, "CONTROL_PLANE_URL=http://cp:8082",
 		"AGENT_NAME=hello", "AGENT_CLI=claude", "AGENT_PROMPT=Say OK.", "AGENT_PERSONALITY=Terse.",
 		"AGENT_EXTRA_ARGS=--max-turns\n3", "WALL_CLOCK_SECONDS=300",
+		"CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test",
 	} {
 		if !slices.Contains(env, want) {
 			t.Errorf("env missing %q in %q", want, env)
 		}
+	}
+
+	if slices.ContainsFunc(env, func(e string) bool { return strings.HasPrefix(e, "ANTHROPIC_API_KEY=") }) {
+		t.Errorf("empty credential must not be passed: %q", env)
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
