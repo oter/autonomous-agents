@@ -18,3 +18,7 @@ ENV DISABLE_AUTOUPDATER=1
 
 # Unprivileged user the entrypoint drops to via setpriv (SPEC §6).
 RUN useradd --create-home --shell /bin/sh agent
+
+# Build fails here if any CLI install is broken; in CI this also exercises
+# the arm64 binaries under QEMU.
+RUN claude --version && codex --version && skills --version

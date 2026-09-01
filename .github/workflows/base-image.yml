@@ -1,9 +1,10 @@
 name: base-image
 
+# Pushed on date-shaped git tags (the SPEC's image tag format), e.g.
+#   git tag 2026-09-01 && git push origin 2026-09-01
 on:
   push:
-    branches: [main]
-    paths: [image/**, .github/workflows/base-image.yml]
+    tags: ['20??-??-??']
   workflow_dispatch:
 
 jobs:
@@ -14,8 +15,11 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+      # Image tag = git tag; workflow_dispatch falls back to today's date.
       - id: tag
-        run: echo "tag=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then t="$GITHUB_REF_NAME"; else t=$(date -u +%F); fi
+          echo "tag=$t" >> "$GITHUB_OUTPUT"
       # arm64 because the Runners are Apple Silicon; amd64 for Coolify.
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
