@@ -68,13 +68,15 @@ is the demo, kept as a guarded test. Both paths pass:
   `.jsonl`, `meta.json` `{"exit_code": 143}`. The manual run through the
   binary (`curl -u oter:… -X POST :8081/agents/sleepy/run`) recorded the same.
 
-Unverified for lack of a credential in this session: the exit-0 path of the
-EXIT trap (traced, not run) and a real completion of the prompt. claude Runs
-use the Claude subscription only: `claude setup-token` mints a long-lived
-token, exported as `CLAUDE_CODE_OAUTH_TOKEN` in the control plane's
-environment. `ANTHROPIC_API_KEY` is never forwarded (the CLI would prefer it
-and bill API credits), and the control plane itself makes no Anthropic API
-calls. With the token set the test asserts exit 0 as well.
+The exit-0 path was then verified the same evening with a credential: claude
+Runs use the Claude subscription only (`claude setup-token` mints a
+long-lived token, exported as `CLAUDE_CODE_OAUTH_TOKEN` in the control
+plane's environment). With it set, the trivial Run answered the prompt and
+exited 0 in under four seconds, Teardown reported `finished`, Inspect
+confirmed exit 0, and the wall-clock Run still exited 143. All three exit
+paths of the EXIT trap (0, 1, 143) have now run for real. `ANTHROPIC_API_KEY`
+is never forwarded (the CLI would prefer it and bill API credits), and the
+control plane itself makes no Anthropic API calls.
 
 ### Deliberate shortcuts, all marked `ponytail:` in code
 
