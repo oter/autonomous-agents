@@ -22,3 +22,8 @@ RUN useradd --create-home --shell /bin/sh agent
 # Build fails here if any CLI install is broken; in CI this also exercises
 # the arm64 binaries under QEMU.
 RUN claude --version && codex --version && skills --version
+
+# The entrypoint is baked, not mounted: the control plane cannot write files
+# to a remote Runner, it only has the Docker API (SPEC §6).
+COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint
+ENTRYPOINT ["/usr/local/bin/entrypoint"]

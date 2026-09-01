@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,11 +39,14 @@ type Config struct {
 		Username       string `yaml:"username"`
 		PasswordBcrypt string `yaml:"password_bcrypt"`
 	} `yaml:"ui"`
-	AgentsDir string            `yaml:"agents_dir"`
-	Image     string            `yaml:"image"`
-	StopGrace Duration          `yaml:"stop_grace"`
-	Runners   map[string]Runner `yaml:"runners"`
-	Secrets   struct {
+	AgentsDir string   `yaml:"agents_dir"`
+	Image     string   `yaml:"image"`
+	StopGrace Duration `yaml:"stop_grace"`
+	// ControlPlaneURL is where a Run reaches the Run API (SPEC §9): the
+	// listen.run port as seen from inside a container on any Runner.
+	ControlPlaneURL string            `yaml:"control_plane_url"`
+	Runners         map[string]Runner `yaml:"runners"`
+	Secrets         struct {
 		MasterIdentity string `yaml:"master_identity"`
 	} `yaml:"secrets"`
 	Journal struct {
@@ -91,6 +95,41 @@ type Limits struct {
 	CPUs      string   `yaml:"cpus"`
 }
 
+// MemoryBytes converts the Docker-style memory string ("2g", "512m", "1024k",
+// or plain bytes) to bytes.
+func (l Limits) MemoryBytes() (int64, error) {
+	m := strings.ToLower(l.Memory)
+	if m == "" {
+		return 0, fmt.Errorf("limits.memory must not be empty")
+	}
+	mult := int64(1)
+	switch m[len(m)-1] {
+	case 'k':
+		mult, m = 1<<10, m[:len(m)-1]
+	case 'm':
+		mult, m = 1<<20, m[:len(m)-1]
+	case 'g':
+		mult, m = 1<<30, m[:len(m)-1]
+	}
+	n, err := strconv.ParseInt(m, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("limits.memory %q: want e.g. 2g or 512m", l.Memory)
+	}
+	return n * mult, nil
+}
+
+// NanoCPUs converts cpus ("1.5") to Docker's NanoCPUs; 0 means unlimited.
+func (l Limits) NanoCPUs() (int64, error) {
+	if l.CPUs == "" {
+		return 0, nil
+	}
+	f, err := strconv.ParseFloat(l.CPUs, 64)
+	if err != nil || f <= 0 {
+		return 0, fmt.Errorf("limits.cpus %q: want a positive number", l.CPUs)
+	}
+	return int64(f * 1e9), nil
+}
+
 type Trigger struct {
 	Kind     string       `yaml:"kind"`
 	Path     string       `yaml:"path"`
@@ -114,6 +153,15 @@ func Load(path string) (*Config, error) {
 	cfg := &Config{}
 	if err := decodeFile(path, cfg); err != nil {
 		return nil, err
+	}
+	for key, missing := range map[string]bool{
+		"image":             cfg.Image == "",
+		"stop_grace":        cfg.StopGrace.Duration <= 0,
+		"control_plane_url": cfg.ControlPlaneURL == "",
+	} {
+		if missing {
+			return nil, fmt.Errorf("%s: %s is required", path, key)
+		}
 	}
 
 	dir := cfg.AgentsDir
@@ -172,6 +220,15 @@ func (a *Agent) validate(runners map[string]Runner) error {
 	}
 	if a.MaxConcurrent < 1 {
 		return fmt.Errorf("max_concurrent must be at least 1, got %d", a.MaxConcurrent)
+	}
+	if a.Limits.WallClock.Duration <= 0 {
+		return fmt.Errorf("limits.wall_clock must be positive, got %v", a.Limits.WallClock)
+	}
+	if _, err := a.Limits.MemoryBytes(); err != nil {
+		return err
+	}
+	if _, err := a.Limits.NanoCPUs(); err != nil {
+		return err
 	}
 	for i, tr := range a.Triggers {
 		if err := tr.validate(); err != nil {

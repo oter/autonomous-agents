@@ -41,6 +41,7 @@ ui:
 agents_dir: ./agents
 image: ghcr.io/oter/agent-base:2026-08-31
 stop_grace: 90s
+control_plane_url: http://100.64.0.1:8082
 runners:
   local:
     docker_host: "unix:///var/run/docker.sock"
@@ -353,5 +354,54 @@ func TestLoadValidTree(t *testing.T) {
 	a := cfg.Agents[0]
 	if a.Name != "linear-triage" || a.Kind != "claude" || a.Prompt != "Read /run/trigger.json.\n" {
 		t.Errorf("agent = %+v", a)
+	}
+}
+
+// Everything the spawner consumes must be present at startup: a Run reaches
+// the control plane over control_plane_url, runs from image, and a zero
+// stop_grace would SIGKILL straight after TERM and lose every Journal.
+func TestSpawnConfigRequiredAtStartup(t *testing.T) {
+	for _, line := range []string{"control_plane_url: http://100.64.0.1:8082\n", "image: ghcr.io/oter/agent-base:2026-08-31\n", "stop_grace: 90s\n"} {
+		key, _, _ := strings.Cut(line, ":")
+		cfgPath := writeTree(t, strings.Replace(validControlPlane, line, "", 1), map[string]string{"a.yaml": minimalAgent})
+		if _, err := config.Load(cfgPath); err == nil || !strings.Contains(err.Error(), key) {
+			t.Errorf("without %s: err = %v, want it named as required", key, err)
+		}
+	}
+	cfg, err := config.Load(writeTree(t, validControlPlane, map[string]string{"a.yaml": minimalAgent}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ControlPlaneURL != "http://100.64.0.1:8082" {
+		t.Errorf("control_plane_url = %q", cfg.ControlPlaneURL)
+	}
+}
+
+// memory and cpus are handed to Docker as bytes and nano-CPUs; a value Docker
+// would reject must fail startup, not the first Run.
+func TestLimitsParse(t *testing.T) {
+	loadErr(t, "a.yaml", minimalAgent+"limits:\n  memory: lots\n")
+	loadErr(t, "a.yaml", minimalAgent+"limits:\n  cpus: fast\n")
+	loadErr(t, "a.yaml", minimalAgent+"limits:\n  wall_clock: 0s\n")
+
+	cfg, err := config.Load(writeTree(t, validControlPlane, map[string]string{
+		"a.yaml": minimalAgent + "limits:\n  memory: 512m\n  cpus: \"1.5\"\n",
+		"b.yaml": strings.Replace(minimalAgent, "linear-triage", "b", 1),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := cfg.Agents[0], cfg.Agents[1]
+	if got, _ := a.Limits.MemoryBytes(); got != 512<<20 {
+		t.Errorf("memory = %d, want 512MiB", got)
+	}
+	if got, _ := a.Limits.NanoCPUs(); got != 1_500_000_000 {
+		t.Errorf("nanocpus = %d, want 1.5e9", got)
+	}
+	if got, _ := b.Limits.MemoryBytes(); got != 2<<30 {
+		t.Errorf("default memory = %d, want 2GiB", got)
+	}
+	if got, _ := b.Limits.NanoCPUs(); got != 0 {
+		t.Errorf("default nanocpus = %d, want 0 (unlimited)", got)
 	}
 }

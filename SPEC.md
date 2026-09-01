@@ -140,6 +140,7 @@ ui:
 agents_dir: ./agents
 image: ghcr.io/oter/agent-base:2026-08-31
 stop_grace: 90s
+control_plane_url: http://100.64.0.1:8082   # listen.run as reached from a Run
 
 runners:
   local:
