@@ -9,9 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl git iptables jq nodejs npm tar util-linux zstd \
     && rm -rf /var/lib/apt/lists/*
 
-# Pinned per the devcontainer docs' reproducible-build guidance; a Run must
-# never self-update mid-flight, hence DISABLE_AUTOUPDATER.
-RUN npm install -g @anthropic-ai/claude-code@2.1.252 @openai/codex@0.152.0 skills@1.5.23 \
+# Unpinned: each dated image build picks up the current CLIs; the date tag
+# itself is the pin. A Run must never self-update mid-flight, hence
+# DISABLE_AUTOUPDATER.
+RUN npm install -g @anthropic-ai/claude-code @openai/codex skills \
     && npm cache clean --force
 ENV DISABLE_AUTOUPDATER=1
 
