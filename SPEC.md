@@ -156,7 +156,10 @@ secrets:
 journal:
   endpoint: https://<account>.r2.cloudflarestorage.com
   bucket: agentruns
-  # credentials for the control plane only; containers get presigned URLs
+  region: auto       # default; what R2 wants, and MinIO does not mind
+  # The credential is AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in the
+  # control plane's environment, never in this file; containers get
+  # presigned URLs.
 ```
 
 **The route surface is split three ways because it has to be.** Linear and
@@ -229,29 +232,34 @@ error, and no way to tell.
 set -eu
 JOURNAL=/run/journal; mkdir -p "$JOURNAL" /run/workspace
 
-api()    { curl -fsS --max-time 10 -H "Authorization: Bearer $RUN_TOKEN" "$@"; }
-report() { api --data "$(jq -cn --arg s "$1" --arg m "${2:-}" \
-             '{status:$s,message:$m}')" "$CONTROL_PLANE_URL/run/status" || true; }
+touch "$JOURNAL/stream.jsonl" "$JOURNAL/stderr.log"
+CLI_VERSION=$("$AGENT_CLI" --version 2>/dev/null) || CLI_VERSION=
+
+api()    { curl -fsS --retry 3 --max-time 10 -H "Authorization: Bearer $RUN_TOKEN" "$@"; }
+report() { api --data "$(jq -cn --arg s "$1" --arg m "${2:-}" --argjson c "${3:-null}" \
+             '{status:$s,message:$m,exit_code:$c}')" "$CONTROL_PLANE_URL/run/status" || true; }
 fail()   { echo "entrypoint: $*" >&2; report failed "$*"; exit 1; }
 
 teardown() {
-  rc=$?; trap - EXIT
-  kill "$HEARTBEAT" "$LIMIT" 2>/dev/null || true
-  kill -TERM "$AGENT" 2>/dev/null || true
+  rc=$?; trap - EXIT; set +e
+  kill "$HEARTBEAT" "$LIMIT" 2>/dev/null
+  kill -TERM "$AGENT" 2>/dev/null
 
   find "$CODEX_HOME" "$CLAUDE_CONFIG_DIR" \
        \( -name '*.jsonl' -o -name '*.jsonl.zst' \) \
-       -exec cp {} "$JOURNAL/" \; 2>/dev/null || true
+       -exec cp {} "$JOURNAL/" \; 2>/dev/null
 
   push_work && w=pushed || w=failed
-  write_meta "$rc" "$w" > "$JOURNAL/meta.json"
+  urls=$(api "$CONTROL_PLANE_URL/run/journal-urls") || urls='{}'
+  write_meta "$rc" "$w" "$urls" > "$JOURNAL/meta.json" || rm -f "$JOURNAL/meta.json"   # §10
   tar --zstd -cf /run/run.tar.zst -C "$JOURNAL" .
-  urls=$(api "$CONTROL_PLANE_URL/run/journal-urls") || urls=
-  [ -z "$urls" ] || {
-    curl -fsS -T "$JOURNAL/meta.json" "$(echo "$urls" | jq -r .meta)"
-    curl -fsS -T /run/run.tar.zst     "$(echo "$urls" | jq -r .archive)"
+  journal="journal upload skipped"
+  [ "$urls" = '{}' ] || {
+    journal="journal uploaded"
+    curl -fsS -T "$JOURNAL/meta.json" "$(echo "$urls" | jq -r .meta)" || journal="journal upload failed: meta"
+    curl -fsS -T /run/run.tar.zst     "$(echo "$urls" | jq -r .archive)" || journal="journal upload failed: archive"
   }
-  report finished "$rc"
+  report finished "$journal" "$rc"
   exit "$rc"
 }
 trap teardown EXIT
@@ -298,6 +306,32 @@ Every awkward line above is load-bearing:
 - **`setpriv` drops to an unprivileged user**, and with it `NET_ADMIN`, so the
   agent cannot flush the egress rules. Teardown remains in the root shell, which
   is what lets it push even if the agent has wedged its own session.
+- **`set +e` first thing in Teardown.** Under `set -e` a failed `curl` would
+  end the function, and the container would exit with curl's status instead
+  of the Run's. Every step below it reports its failure and carries on to
+  `exit "$rc"`; the upload's outcome travels in the finished report's
+  message, and only the exact message `journal uploaded` lets the control
+  plane remove the exited container. Any other keeps it, as the only copy.
+- **`journal-urls` before `write_meta`.** The URLs are minted at Teardown so a
+  ninety-minute Run cannot outlive them ([ADR-0005](docs/adr/0005-journals-in-object-storage.md)),
+  and the same reply carries the Run's throttle count, which `meta.json`
+  records (§10). A Run that cannot reach the control plane skips the upload
+  and still writes its Journal into the container.
+- **`--retry 3` in `api`.** A Run that drained its token bucket in its last
+  seconds gets 429 at Teardown, and without a retry that would cost it its
+  Journal; curl waits the `Retry-After` the API sends (§9). A refused
+  connection is not retried, so a Run whose control plane is gone does not
+  stall on every heartbeat.
+- **`touch` the stream and stderr files first.** A Run that aborts before its
+  agent starts still has the two files §10 lists, and an empty stream
+  summarises to `no_terminal_event` rather than to nothing. A `write_meta`
+  that fails removes its output: an empty `meta.json` must never be uploaded.
+- **The control plane removes an exited container only after it has seen
+  both objects in the bucket itself**, with a `HEAD` on presigned URLs of its
+  own. The finished report's message says what the container thinks
+  happened; it is logged, never trusted for the removal, because the agent
+  holds the same token and could report anything. A container the bucket
+  does not vouch for is kept as the only copy of its Journal.
 
 **Failure policy.** Payload fetch, skills install, and clone each **abort** on
 failure. An Agent that declares skills has a prompt that assumes them, so
@@ -385,7 +419,7 @@ nothing.
 GET  /run/payload      → 200 raw trigger body; {} for a schedule Trigger
 POST /run/status       → {status, message, exit_code} → 204
 POST /run/secrets      → {names:[...]} → 200 {NAME: value} | 403 {denied:[...]}
-GET  /run/journal-urls → 200 {meta: <presigned PUT>, archive: <presigned PUT>}
+GET  /run/journal-urls → 200 {meta: <presigned PUT>, archive: <presigned PUT>, throttle_events: n}
 
 401 absent/bad token · 403 denied or terminal Run · 404 unknown Run · 429 throttled
 ```
@@ -406,6 +440,10 @@ GET  /run/journal-urls → 200 {meta: <presigned PUT>, archive: <presigned PUT>}
   `ContainerInspect`.** A gap is a hint to ask Docker, never a conclusion.
 - **First terminal state wins**, and **`ContainerInspect` is authoritative** on
   disagreement.
+- **`journal-urls` carries the throttle count** because it is the one end-of-Run
+  fact `meta.json` records (§10) that only the control plane holds. It is a
+  fact about the Run itself, read-only, so it stays inside the principle
+  below; it is not a second status channel.
 - **If the control plane is unreachable, the Run continues.** It holds its
   payload and its repos, and Teardown pushes the work branch without help.
   Commands needing a secret fail until the link returns.
@@ -440,12 +478,61 @@ work branch and whether its push succeeded; throttle events; and cost —
 `total_cost_usd` for claude, **tokens only** for codex, a divergence the schema
 records rather than papers over.
 
+**The schema**, flat and stable, written by the entrypoint's `write_meta` from
+three sources: `RUN_META`, the JSON the control plane puts in the environment
+at spawn with what only it knows (`agent_sha256`, `runner`, `trigger_*`,
+`image`, `image_digest`, the limits); the entrypoint's own facts; and a
+summary of `stream.jsonl` computed by `stream.jq` in the image.
+
+```json
+{
+  "run_id": "20260902-142724-hello-1dd6", "agent": "hello", "agent_sha256": "<hex>",
+  "runner": "local", "trigger_kind": "manual", "trigger_name": "run-now",
+  "cli": "claude", "cli_version": "2.1.258 (Claude Code)",
+  "image": "ghcr.io/oter/agent-base:2026-09-04", "image_id": "sha256:<hex>",
+  "image_digest": "ghcr.io/oter/agent-base@sha256:<hex>",
+  "wall_clock_seconds": 300, "memory": "1g", "cpus": "1",
+  "prompt": "<verbatim>", "personality": "<verbatim>",
+  "started_at": "2026-09-02T14:27:24Z", "ended_at": "2026-09-02T14:27:25Z", "duration_seconds": 1,
+  "exit_code": 0, "terminal_reason": "completed", "is_error": false, "error": null,
+  "num_turns": 1, "total_cost_usd": 0.17, "usage": {"<the CLI's own usage object>": 0},
+  "permission_denials": 0, "error_events": null, "failed_items": null, "events": 4,
+  "work_branch": null, "work_push": "none", "throttle_events": 0
+}
+```
+
+- `terminal_reason` is claude's own value from its `result` event
+  (`completed`, `api_error`, `max_turns`, `budget_exhausted`, …), and for
+  codex `completed` or `failed` from whichever of `turn.completed` and
+  `turn.failed` came last. Either CLI gets `no_terminal_event` when the
+  stream ended without one: killed at the wall clock, stopped, or crashed.
+  A claude `result` event whose `terminal_reason` is itself `null` (measured
+  once, for an unknown slash command) stays `null`; `num_turns` shows the
+  event existed. `unparsed` means the summary itself failed, which is a
+  broken image, not a kind of Run. `error` is claude's `result` text when
+  `is_error`, and codex's `turn.failed` message.
+- **A field the CLI does not report is `null`, never zero.** codex reports no
+  dollars, no `is_error`, no `permission_denials`; claude has no top-level
+  `error` events and no `failed_items`. `usage` is each CLI's own object,
+  field names untouched, summed across turns for codex.
+- `image_id` is Docker's content id of the image, present for any image;
+  `image_digest` is the registry digest it was pulled by, absent for a local
+  build. `cpus` is absent when unlimited. `throttle_events` is `null` when the
+  control plane could not be reached at Teardown, in which case nothing was
+  uploaded either. `work_branch` is `null` and `work_push` is `none` until
+  ticket 11 pushes; resolved skill versions arrive with the same ticket.
+
 **Parser notes**, all measured: `web_search` serialises `id` twice; `declined`
 patches fold into `failed`; `error` events carry no `will_retry`, so retry noise
 is shape-identical to a fatal error; codex rollout directories are local-time
 while the timestamps inside are UTC; `codex exec` writes `history_mode:
 paginated` whose `TurnItem` tags are PascalCase while everything else is
-snake_case.
+snake_case. `stream.jq` honours the first three: each line is parsed on
+its own so a torn last line costs nothing, a duplicated key parses last-wins,
+only a terminal event decides the outcome and `error` events are counted
+rather than interpreted, and `failed_items` is named for what codex actually
+says. The last two are why Teardown copies the whole state tree rather than
+today's date directory, and archives rollouts rather than parsing them.
 
 **Nothing scrubs secrets.** An agent that runs `dsecrets FOO -- sh -c 'echo $FOO'`
 puts the value in the stream, and nothing in the container knows the values to

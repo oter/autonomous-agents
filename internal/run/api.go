@@ -12,8 +12,9 @@ import (
 
 // API serves the Run API (SPEC §9): the one channel a container reaches the
 // control plane through. Read-only about the Run itself, write-only about
-// its own status; nothing else is routed here.
-func API(store *Store, log *slog.Logger) http.Handler {
+// its own status; nothing else is routed here. bucket is where Journals
+// land; only presigned URLs for it ever reach a container.
+func API(store *Store, bucket Bucket, log *slog.Logger) http.Handler {
 	log = cmp.Or(log, slog.Default())
 	mux := http.NewServeMux()
 
@@ -43,6 +44,21 @@ func API(store *Store, log *slog.Logger) http.Handler {
 			}
 		}
 		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// Journal upload (SPEC §10, ADR-0005): two presigned PUTs under
+	// <agent>/<run-id>/, minted when Teardown asks so a long Run cannot
+	// outlive them, plus the one end-of-Run fact only the control plane
+	// holds and meta.json records: the Run's throttle count.
+	mux.HandleFunc("GET /run/journal-urls", func(w http.ResponseWriter, r *http.Request) {
+		run := r.Context().Value(runKey{}).(Run)
+		prefix, now := run.Agent+"/"+run.ID+"/", time.Now()
+		w.Header().Set("Content-Type", "application/json")
+		json.MarshalWrite(w, map[string]any{
+			"meta":            bucket.Presign("PUT", prefix+"meta.json", now, JournalURLExpiry),
+			"archive":         bucket.Presign("PUT", prefix+"run.tar.zst", now, JournalURLExpiry),
+			"throttle_events": run.Throttled,
+		})
 	})
 
 	// SPEC §9 status semantics, in order: 401 bad token, 404 unknown Run,

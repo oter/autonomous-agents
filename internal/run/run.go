@@ -49,11 +49,22 @@ func IsToken(s string) bool {
 	return err == nil && len(b) == 32
 }
 
+// Trigger is what started a Run (CONTEXT.md): a webhook named by its path,
+// a schedule by its cron, or the UI's run-now.
+type Trigger struct {
+	Kind string
+	Name string
+}
+
+// RunNow is the UI's Trigger (SPEC §5 step 1).
+var RunNow = Trigger{Kind: "manual", Name: "run-now"}
+
 // Run is one execution of one Agent (CONTEXT.md).
 type Run struct {
 	ID        string
 	Agent     string
 	Runner    string
+	Trigger   Trigger
 	Container string
 	Token     string
 	Started   time.Time

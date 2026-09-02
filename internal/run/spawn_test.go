@@ -25,6 +25,7 @@ type fakeDocker struct {
 	create      map[string]any
 	inspects    atomic.Int32
 	running     atomic.Bool // keep reporting running instead of exiting on the second inspect
+	removed     atomic.Bool
 }
 
 func newFakeDocker(t *testing.T) (*fakeDocker, string) {
@@ -40,6 +41,13 @@ func newFakeDocker(t *testing.T) (*fakeDocker, string) {
 		w.Write([]byte(`{"Id":"cid123","Warnings":[]}`))
 	})
 	mux.HandleFunc("POST /containers/cid123/start", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(204)
+	})
+	mux.HandleFunc("GET /images/agent-base:test/json", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"Id":"sha256:deadbeef","RepoTags":["agent-base:test"],"RepoDigests":["ghcr.io/oter/agent-base@sha256:feed"]}`))
+	})
+	mux.HandleFunc("DELETE /containers/cid123", func(w http.ResponseWriter, r *http.Request) {
+		f.removed.Store(true)
 		w.WriteHeader(204)
 	})
 	mux.HandleFunc("GET /containers/cid123/json", func(w http.ResponseWriter, r *http.Request) {
@@ -91,16 +99,16 @@ func TestStartCreatesContainerAndRecordsInspectOutcome(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-api03-must-not-leak")
 	agent := config.Agent{
-		Name: "hello", Kind: "claude", Prompt: "Say OK.", Personality: "Terse.",
+		Name: "hello", Kind: "claude", Prompt: "Say OK.", Personality: "Terse.", SHA256: "abc123",
 		Runner: "local", ExtraArgs: []string{"--max-turns", "3"},
 		Limits: config.Limits{WallClock: config.Duration{Duration: 5 * time.Minute}, Memory: "512m", CPUs: "1.5"},
 	}
 
-	r, err := sp.Start(t.Context(), agent)
+	r, err := sp.Start(t.Context(), agent, run.RunNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(r.ID, "-hello-") || r.Container != "cid123" || r.Token == "" {
+	if !strings.Contains(r.ID, "-hello-") || r.Container != "cid123" || r.Token == "" || r.Trigger.Kind != "manual" {
 		t.Errorf("run = %+v", r)
 	}
 	if fake.createQuery != "name="+r.ID {
@@ -127,6 +135,10 @@ func TestStartCreatesContainerAndRecordsInspectOutcome(t *testing.T) {
 		"AGENT_NAME=hello", "AGENT_CLI=claude", "AGENT_PROMPT=Say OK.", "AGENT_PERSONALITY=Terse.",
 		"AGENT_EXTRA_ARGS=--max-turns\n3", "WALL_CLOCK_SECONDS=300",
 		"CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test",
+		// SPEC §10's at-start facts only the control plane knows, for meta.json.
+		`RUN_META={"agent_sha256":"abc123","runner":"local","trigger_kind":"manual","trigger_name":"run-now",` +
+			`"image":"agent-base:test","image_id":"sha256:deadbeef","image_digest":"ghcr.io/oter/agent-base@sha256:feed",` +
+			`"wall_clock_seconds":300,"memory":"512m","cpus":"1.5"}`,
 	} {
 		if !slices.Contains(env, want) {
 			t.Errorf("env missing %q in %q", want, env)
@@ -151,11 +163,63 @@ func TestStartCreatesContainerAndRecordsInspectOutcome(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+	// Nothing is in the bucket, so the container is the only copy of the
+	// Journal and stays for docker cp.
+	time.Sleep(20 * time.Millisecond)
+	if fake.removed.Load() {
+		t.Error("container removed although its Journal never reached the bucket")
+	}
+}
+
+// Once both Journal objects are in the bucket, as seen by the control plane
+// itself, the exited container has nothing left to offer and is removed. A
+// finished report claiming as much is not what decides it.
+func TestPollerRemovesContainerOnceJournalIsInTheBucket(t *testing.T) {
+	fake, host := newFakeDocker(t)
+	fake.running.Store(true)
+	client, err := docker.New(host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var heads []string
+	bucket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		heads = append(heads, r.Method+" "+r.URL.Path)
+	}))
+	t.Cleanup(bucket.Close)
+	store := run.NewStore()
+	sp := &run.Spawner{
+		Image: "agent-base:test", ControlPlaneURL: "http://cp:8082",
+		Runners: map[string]*docker.Client{"local": client}, Store: store,
+		Bucket:       run.Bucket{URL: mustURL(t, bucket.URL+"/agentruns"), Region: "auto", AccessKey: "k", SecretKey: "s"},
+		PollInterval: 5 * time.Millisecond,
+	}
+	r, err := sp.Start(t.Context(), config.Agent{
+		Name: "tidy", Kind: "claude", Runner: "local", Prompt: "x",
+		Limits: config.Limits{WallClock: config.Duration{Duration: time.Minute}, Memory: "1g"},
+	}, run.RunNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.running.Store(false)
+	deadline := time.Now().Add(2 * time.Second)
+	for !fake.removed.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("container was never removed after its Journal was uploaded")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got, _ := store.Get(r.ID); !got.Terminal || got.ExitFrom != run.FromInspect {
+		t.Errorf("run = %+v, want terminal from inspect", got)
+	}
+	prefix := "HEAD /agentruns/tidy/" + r.ID + "/"
+	if len(heads) != 2 || heads[0] != prefix+"meta.json" || heads[1] != prefix+"run.tar.zst" {
+		t.Errorf("bucket saw %v, want a HEAD of both objects", heads)
+	}
 }
 
 func TestStartUnknownRunner(t *testing.T) {
 	sp := &run.Spawner{Store: run.NewStore(), Runners: map[string]*docker.Client{}}
-	if _, err := sp.Start(t.Context(), config.Agent{Name: "a", Runner: "macmini"}); err == nil {
+	if _, err := sp.Start(t.Context(), config.Agent{Name: "a", Runner: "macmini"}, run.Trigger{}); err == nil {
 		t.Fatal("want error for a Runner with no client")
 	}
 }
@@ -179,7 +243,7 @@ func TestPollerMarksStaleButNeverKills(t *testing.T) {
 	r, err := sp.Start(t.Context(), config.Agent{
 		Name: "quiet", Kind: "claude", Runner: "local", Prompt: "x",
 		Limits: config.Limits{WallClock: config.Duration{Duration: time.Minute}, Memory: "1g"},
-	})
+	}, run.RunNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +271,7 @@ func TestPollerMarksStaleButNeverKills(t *testing.T) {
 	}
 
 	// A heartbeat over the Run API clears the flag ...
-	if res := call(t, run.API(store, nil), "POST", "/run/status", r.Token, `{"status":"running"}`); res.StatusCode != 204 {
+	if res := call(t, run.API(store, run.Bucket{}, nil), "POST", "/run/status", r.Token, `{"status":"running"}`); res.StatusCode != 204 {
 		t.Fatalf("heartbeat: %d", res.StatusCode)
 	}
 	if got, _ := store.Get(r.ID); got.Stale || got.Status != "running" {

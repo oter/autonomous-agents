@@ -5,6 +5,9 @@
 package config
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -49,9 +52,15 @@ type Config struct {
 	Secrets         struct {
 		MasterIdentity string `yaml:"master_identity"`
 	} `yaml:"secrets"`
+	// Journal is the S3-compatible bucket every Journal lands in (SPEC §10).
+	// The credential is not here: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+	// in the control plane's environment, never in a file in git.
 	Journal struct {
 		Endpoint string `yaml:"endpoint"`
 		Bucket   string `yaml:"bucket"`
+		// ponytail: an unvalidated string; default auto, which is what R2
+		// wants. Validate against the endpoint if a wrong region ever bites.
+		Region string `yaml:"region"`
 	} `yaml:"journal"`
 
 	// Agents holds every definition found in AgentsDir, in file-path order.
@@ -64,7 +73,11 @@ type Runner struct {
 }
 
 type Agent struct {
-	Name string `yaml:"name"`
+	// SHA256 is the hex digest of the Agent's file bytes, recorded in every
+	// Journal so a behaviour change can be correlated with a configuration
+	// change (SPEC §10).
+	SHA256 string `yaml:"-"`
+	Name   string `yaml:"name"`
 	// Kind is the `agent:` key: which CLI runs this Agent, claude or codex.
 	Kind   string `yaml:"agent"`
 	Prompt string `yaml:"prompt"`
@@ -151,13 +164,16 @@ type TriggerAuth struct {
 // config file's directory. Any error names the file it came from.
 func Load(path string) (*Config, error) {
 	cfg := &Config{}
-	if err := decodeFile(path, cfg); err != nil {
+	cfg.Journal.Region = "auto"
+	if _, err := decodeFile(path, cfg); err != nil {
 		return nil, err
 	}
 	for key, missing := range map[string]bool{
 		"image":             cfg.Image == "",
 		"stop_grace":        cfg.StopGrace.Duration <= 0,
 		"control_plane_url": cfg.ControlPlaneURL == "",
+		"journal.endpoint":  cfg.Journal.Endpoint == "",
+		"journal.bucket":    cfg.Journal.Bucket == "",
 	} {
 		if missing {
 			return nil, fmt.Errorf("%s: %s is required", path, key)
@@ -187,9 +203,12 @@ func Load(path string) (*Config, error) {
 			Limits:        Limits{WallClock: Duration{30 * time.Minute}, Memory: "2g"},
 			MaxConcurrent: 1,
 		}
-		if err := decodeFile(p, &a); err != nil {
+		raw, err := decodeFile(p, &a)
+		if err != nil {
 			return nil, err
 		}
+		sum := sha256.Sum256(raw)
+		a.SHA256 = hex.EncodeToString(sum[:])
 		if err := a.validate(cfg.Runners); err != nil {
 			return nil, fmt.Errorf("%s: %w", p, err)
 		}
@@ -281,16 +300,16 @@ func (au *TriggerAuth) validate() error {
 	return nil
 }
 
-func decodeFile(path string, out any) error {
-	f, err := os.Open(path)
+// decodeFile decodes the YAML at path into out and returns the file bytes.
+func decodeFile(path string, out any) ([]byte, error) {
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer f.Close()
-	dec := yaml.NewDecoder(f)
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	dec.KnownFields(true)
 	if err := dec.Decode(out); err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	return nil
+	return raw, nil
 }

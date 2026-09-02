@@ -8,6 +8,7 @@ import (
 	"flag"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -34,6 +35,23 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	// The bucket credential lives in the environment, never in the config
+	// file (SPEC §3); only presigned URLs for it ever reach a Run.
+	for _, v := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"} {
+		if os.Getenv(v) == "" {
+			log.Error("journal credential is not set in the environment", "var", v)
+			os.Exit(1)
+		}
+	}
+	bucketURL, err := url.Parse(cfg.Journal.Endpoint + "/" + cfg.Journal.Bucket)
+	if err != nil {
+		log.Error("journal.endpoint", "err", err)
+		os.Exit(1)
+	}
+	bucket := run.Bucket{
+		URL: *bucketURL, Region: cfg.Journal.Region,
+		AccessKey: os.Getenv("AWS_ACCESS_KEY_ID"), SecretKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+	}
 	store := run.NewStore()
 	spawner := &run.Spawner{
 		Image:           cfg.Image,
@@ -41,6 +59,7 @@ func main() {
 		ControlPlaneURL: cfg.ControlPlaneURL,
 		Runners:         runners,
 		Store:           store,
+		Bucket:          bucket,
 		Log:             log,
 	}
 	agents := map[string]config.Agent{}
@@ -56,7 +75,7 @@ func main() {
 			http.NotFound(w, r)
 			return
 		}
-		started, err := spawner.Start(r.Context(), a)
+		started, err := spawner.Start(r.Context(), a, run.RunNow)
 		if err != nil {
 			log.Error("run now", "agent", a.Name, "err", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -68,7 +87,7 @@ func main() {
 		json.MarshalWrite(w, map[string]string{"id": started.ID})
 	})
 
-	go serve(cfg.Listen.Run, run.API(store, log), log)
+	go serve(cfg.Listen.Run, run.API(store, bucket, log), log)
 	serve(cfg.Listen.UI, basicAuth(ui, cfg.UI.Username, cfg.UI.PasswordBcrypt), log)
 }
 

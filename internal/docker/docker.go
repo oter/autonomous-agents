@@ -76,6 +76,26 @@ func (c *Client) Start(ctx context.Context, id string) error {
 	return c.do(ctx, "POST", "/containers/"+id+"/start", nil, nil)
 }
 
+// Remove deletes an exited container. Nothing here stops one: a Run is
+// never killed by the control plane (SPEC §9).
+func (c *Client) Remove(ctx context.Context, id string) error {
+	return c.do(ctx, "DELETE", "/containers/"+id, nil, nil)
+}
+
+// Image is the part of GET /images/{ref}/json a Journal records (SPEC
+// §10): the content id, and the registry digest when the image was pulled.
+// A tag can move; neither of these can.
+type Image struct {
+	ID          string   `json:"Id"`
+	RepoDigests []string `json:"RepoDigests"`
+}
+
+func (c *Client) Image(ctx context.Context, ref string) (Image, error) {
+	var out Image
+	err := c.do(ctx, "GET", "/images/"+ref+"/json", nil, &out)
+	return out, err
+}
+
 func (c *Client) Inspect(ctx context.Context, id string) (State, error) {
 	var out struct {
 		State State `json:"State"`

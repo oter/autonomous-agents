@@ -32,8 +32,10 @@ are allowed to decrypt.
 ## Trigger
 
 Whatever causes a Run to start. Two kinds: an inbound webhook, and a schedule
-tick. A Trigger carries a **Payload** — for a webhook, the request body; for a
-schedule, nothing.
+tick; plus the UI's "run now", recorded as kind `manual`. A Trigger carries a
+**Payload** — for a webhook, the request body; for a schedule and for run
+now, nothing. A Run records its Trigger's kind and name (the webhook's path,
+the schedule's cron).
 
 ## Broker
 

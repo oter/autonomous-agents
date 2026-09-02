@@ -3,9 +3,11 @@ package run
 import (
 	"cmp"
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -22,15 +24,19 @@ type Spawner struct {
 	ControlPlaneURL string
 	Runners         map[string]*docker.Client
 	Store           *Store
+	Bucket          Bucket       // where Journals land; looked at before an exited container is removed
+	HTTP            *http.Client // for that look; default journalHTTP
 	Log             *slog.Logger
 	PollInterval    time.Duration // default 5s
 	StaleAfter      time.Duration // default StaleAfter: three missed heartbeats
 }
 
+var journalHTTP = &http.Client{Timeout: 30 * time.Second}
+
 // Start allocates a run id and RUN_TOKEN, creates and starts the container on
 // the Agent's Runner, and polls ContainerInspect in the background until the
 // container exits. Queueing against max_concurrent lands in ticket 09.
-func (s *Spawner) Start(ctx context.Context, a config.Agent) (Run, error) {
+func (s *Spawner) Start(ctx context.Context, a config.Agent, trig Trigger) (Run, error) {
 	client, ok := s.Runners[a.Runner]
 	if !ok {
 		return Run{}, fmt.Errorf("runner %q has no Docker client", a.Runner)
@@ -43,9 +49,32 @@ func (s *Spawner) Start(ctx context.Context, a config.Agent) (Run, error) {
 	if err != nil {
 		return Run{}, err
 	}
+	img, err := client.Image(ctx, s.Image)
+	if err != nil {
+		return Run{}, err
+	}
 
 	now := time.Now()
-	r := &Run{ID: NewID(now, a.Name), Agent: a.Name, Runner: a.Runner, Token: NewToken(), Started: now}
+	r := &Run{ID: NewID(now, a.Name), Agent: a.Name, Runner: a.Runner, Trigger: trig, Token: NewToken(), Started: now}
+	// The at-start facts of meta.json that only the control plane knows
+	// (SPEC §10); the entrypoint merges them in verbatim. The prompt and
+	// personality are already in the environment under their own names.
+	meta, err := json.Marshal(struct {
+		AgentSHA256 string `json:"agent_sha256"`
+		Runner      string `json:"runner"`
+		TriggerKind string `json:"trigger_kind"`
+		TriggerName string `json:"trigger_name"`
+		Image       string `json:"image"`
+		ImageID     string `json:"image_id"`
+		ImageDigest string `json:"image_digest,omitempty"` // absent for a local build
+		WallClock   int    `json:"wall_clock_seconds"`
+		Memory      string `json:"memory"`
+		CPUs        string `json:"cpus,omitempty"` // absent means unlimited
+	}{a.SHA256, a.Runner, trig.Kind, trig.Name, s.Image, img.ID, strings.Join(img.RepoDigests[:min(1, len(img.RepoDigests))], ""),
+		int(a.Limits.WallClock.Seconds()), a.Limits.Memory, a.Limits.CPUs})
+	if err != nil {
+		return Run{}, err
+	}
 	env := []string{
 		"RUN_ID=" + r.ID,
 		"RUN_TOKEN=" + r.Token,
@@ -58,6 +87,7 @@ func (s *Spawner) Start(ctx context.Context, a config.Agent) (Run, error) {
 		// empty arg, is unsupported.
 		"AGENT_EXTRA_ARGS=" + strings.Join(a.ExtraArgs, "\n"),
 		"WALL_CLOCK_SECONDS=" + strconv.Itoa(int(a.Limits.WallClock.Seconds())),
+		"RUN_META=" + string(meta),
 	}
 	// ponytail: the model credential is passed through from the control
 	// plane's own environment until ticket 06 decrypts it from the Allowlist.
@@ -95,9 +125,9 @@ func (s *Spawner) Start(ctx context.Context, a config.Agent) (Run, error) {
 // heartbeats is marked stale on the tick that notices, and that same tick's
 // Inspect is the "immediate" one (SPEC §9): a gap is a hint to ask Docker,
 // never a conclusion. Docker saying "running" leaves the Run alive and
-// flagged; nothing here kills.
-// ponytail: the exited container is kept so its Journal can be read with
-// docker cp; remove it once ticket 05 uploads the Journal.
+// flagged; nothing here kills. An exited container is removed once both
+// Journal objects are seen in the bucket, and kept otherwise: then it is the
+// only copy, and docker cp is how to read it.
 func (s *Spawner) poll(client *docker.Client, r Run) {
 	log := cmp.Or(s.Log, slog.Default()).With("run", r.ID)
 	staleAfter := cmp.Or(s.StaleAfter, StaleAfter)
@@ -118,7 +148,31 @@ func (s *Spawner) poll(client *docker.Client, r Run) {
 		case st.Exited():
 			s.Store.Finish(r.ID, st.ExitCode, FromInspect, time.Now())
 			log.Info("run finished", "exit_code", st.ExitCode, "oom_killed", st.OOMKilled, "status", st.Status)
+			if !s.journaled(r) {
+				got, _ := s.Store.Get(r.ID)
+				log.Warn("journal not in the bucket; container kept for docker cp", "last_report", got.Status, "message", got.Message)
+			} else if err := client.Remove(context.Background(), r.Container); err != nil {
+				log.Warn("remove container", "err", err)
+			}
 			return
 		}
 	}
+}
+
+// journaled reports whether both of the Run's Journal objects are in the
+// bucket. The control plane's own look decides that an exited container may
+// go, never the container's finished report: a Run holds its token and can
+// report anything (ADR-0004), and this is the only copy at stake.
+func (s *Spawner) journaled(r Run) bool {
+	for _, key := range []string{"meta.json", "run.tar.zst"} {
+		res, err := cmp.Or(s.HTTP, journalHTTP).Head(s.Bucket.Presign("HEAD", r.Agent+"/"+r.ID+"/"+key, time.Now(), time.Minute))
+		if err != nil {
+			return false
+		}
+		res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			return false
+		}
+	}
+	return true
 }

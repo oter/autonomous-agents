@@ -1,6 +1,8 @@
 package config_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -403,5 +405,44 @@ func TestLimitsParse(t *testing.T) {
 	}
 	if got, _ := b.Limits.NanoCPUs(); got != 0 {
 		t.Errorf("default nanocpus = %d, want 0 (unlimited)", got)
+	}
+}
+
+// SPEC §10: every Journal carries the SHA-256 of the Agent's YAML, so a
+// behaviour change can be correlated with a configuration change.
+func TestAgentSHA256IsOfTheFileBytes(t *testing.T) {
+	cfg, err := config.Load(writeTree(t, validControlPlane, map[string]string{"linear-triage.yaml": minimalAgent}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(minimalAgent))
+	if got := cfg.Agents[0].SHA256; got != hex.EncodeToString(sum[:]) {
+		t.Errorf("sha256 = %q, want the hash of the file bytes %x", got, sum)
+	}
+}
+
+// The Journal is what makes a Run durable (SPEC §10): a control plane with
+// nowhere to put one must not start. Region defaults to R2's "auto".
+func TestJournalRequiredAtStartup(t *testing.T) {
+	for _, line := range []string{"  endpoint: https://acct.r2.cloudflarestorage.com\n", "  bucket: agentruns\n"} {
+		key := strings.TrimSpace(strings.SplitN(line, ":", 2)[0])
+		cfgPath := writeTree(t, strings.Replace(validControlPlane, line, "", 1), map[string]string{"a.yaml": minimalAgent})
+		if _, err := config.Load(cfgPath); err == nil || !strings.Contains(err.Error(), "journal."+key) {
+			t.Errorf("without journal.%s: err = %v, want it named as required", key, err)
+		}
+	}
+	cfg, err := config.Load(writeTree(t, validControlPlane, map[string]string{"a.yaml": minimalAgent}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Journal.Region != "auto" {
+		t.Errorf("default region = %q, want auto", cfg.Journal.Region)
+	}
+	cfg, err = config.Load(writeTree(t, validControlPlane+"  region: us-east-1\n", map[string]string{"a.yaml": minimalAgent}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Journal.Region != "us-east-1" {
+		t.Errorf("region = %q, want us-east-1", cfg.Journal.Region)
 	}
 }
