@@ -42,9 +42,11 @@ trap 'exit 143' TERM INT
 
 # Ticket 10 adds install_egress_rules here.
 api "$CONTROL_PLANE_URL/run/payload" -o /run/trigger.json || fail "payload fetch"
+# Heartbeat before skills install and clone: those have their own timeouts of
+# minutes, and a Run silent that long is marked stale (SPEC §9).
+( while sleep 30; do report running; done ) & HEARTBEAT=$!
 # Ticket 11 adds install_skills and clone_repos here.
 
-( while sleep 30; do report running; done ) & HEARTBEAT=$!
 ( sleep "$WALL_CLOCK_SECONDS"; kill -TERM 1 )  & LIMIT=$!
 
 # build_argv: CLI trivia lives here, not in Go (SPEC §6). Never `claude --bare`.

@@ -259,11 +259,12 @@ trap 'exit 143' TERM INT
 
 install_egress_rules                                    # §7
 api "$CONTROL_PLANE_URL/run/payload" -o /run/trigger.json || fail "payload fetch"
+( while sleep 30; do report running; done ) & HEARTBEAT=$!
+
 [ -z "${AGENT_SKILLS:-}" ] || timeout "${SKILLS_TIMEOUT:-300}" \
   install_skills "$AGENT_SKILLS" || fail "skills install"
 clone_repos "${AGENT_REPOS:-}" || fail "clone"
 
-( while sleep 30; do report running; done ) & HEARTBEAT=$!
 ( sleep "$WALL_CLOCK_SECONDS"; kill -TERM 1 )  & LIMIT=$!
 
 build_argv                                              # per AGENT_CLI
@@ -290,6 +291,10 @@ Every awkward line above is load-bearing:
   cannot kill what it cannot reach.
 - **Both globs in the `find`.** codex compresses rollouts when cold, so a
   `*.jsonl` glob silently drops them.
+- **The heartbeat starts before skills install and clone.** Each has its own
+  timeout of minutes, and three missed heartbeats mark a Run stale (§9); a
+  Run quietly installing for two minutes must not be one. The wall clock
+  still starts after them, because the install does not consume it.
 - **`setpriv` drops to an unprivileged user**, and with it `NET_ADMIN`, so the
   agent cannot flush the egress rules. Teardown remains in the root shell, which
   is what lets it push even if the agent has wedged its own session.
@@ -388,10 +393,15 @@ GET  /run/journal-urls → 200 {meta: <presigned PUT>, archive: <presigned PUT>}
 - **A denied name is a 403 naming the names, never a silent omission.**
 - **The token is opaque and stored, not a JWT** — the control plane already holds
   a Run record, so revocation is instant and there is no denylist to maintain.
+  The token is the only identity the API sees, so a *bad* token is one that
+  cannot be a `RUN_TOKEN` at all (absent, not `Bearer`, not 32 base64url
+  bytes), and an *unknown Run* is a well-formed token no Run holds — after a
+  control-plane restart, that is an orphan container, and it is logged as one.
 - **Abuse is throttled and surfaced, never auto-killed.** A per-Run token bucket
-  returns 429; the Run appears flagged in the UI and its Journal. A threshold
-  that kills is a guess, and it fails by killing a legitimate ninety-minute Run
-  at minute eighty-five.
+  (sized in code; every route counted) returns 429 with `Retry-After`; each
+  refusal is a throttle event on the Run, and the Run appears flagged in the
+  UI and its Journal. A threshold that kills is a guess,
+  and it fails by killing a legitimate ninety-minute Run at minute eighty-five.
 - **Three missed heartbeats mark a Run stale and trigger an immediate
   `ContainerInspect`.** A gap is a hint to ask Docker, never a conclusion.
 - **First terminal state wins**, and **`ContainerInspect` is authoritative** on

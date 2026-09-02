@@ -50,20 +50,21 @@ func TestWalkingSkeleton(t *testing.T) {
 		Store:           store,
 		PollInterval:    time.Second,
 	}
-	// Waits until Docker has confirmed the exit: the container's own finished
-	// report lands first, and Inspect overrides it a poll later (SPEC §9).
-	wait := func(t *testing.T, id string) run.Run {
+	wait := func(t *testing.T, id, what string, cond func(run.Run) bool) run.Run {
 		t.Helper()
 		deadline := time.Now().Add(3 * time.Minute)
 		for time.Now().Before(deadline) {
-			if r, _ := store.Get(id); r.Terminal && r.ExitFrom == run.FromInspect {
+			if r, _ := store.Get(id); cond(r) {
 				return r
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
-		t.Fatal("run never reached a terminal state")
+		t.Fatalf("run never %s", what)
 		return run.Run{}
 	}
+	// Docker has confirmed the exit: the container's own finished report
+	// lands first, and Inspect overrides it a poll later (SPEC §9).
+	inspected := func(r run.Run) bool { return r.Terminal && r.ExitFrom == run.FromInspect }
 	journal := func(t *testing.T, r run.Run) map[string]any {
 		t.Helper()
 		dir := t.TempDir()
@@ -99,7 +100,7 @@ func TestWalkingSkeleton(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { exec.Command("docker", "rm", "-f", started.Container).Run() })
-		r := wait(t, started.ID)
+		r := wait(t, started.ID, "reached a terminal state", inspected)
 		t.Logf("run %s: exit %d from %s, last report %q", r.ID, r.ExitCode, r.ExitFrom, r.Status)
 		if r.ExitFrom != run.FromInspect || r.Status != "finished" {
 			t.Errorf("run = %+v, want exit from inspect and a finished report", r)
@@ -123,10 +124,44 @@ func TestWalkingSkeleton(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { exec.Command("docker", "rm", "-f", started.Container).Run() })
-		r := wait(t, started.ID)
+		r := wait(t, started.ID, "reached a terminal state", inspected)
 		t.Logf("run %s: exit %d from %s, last report %q", r.ID, r.ExitCode, r.ExitFrom, r.Status)
 		if r.ExitCode != 143 || r.ExitFrom != run.FromInspect || r.Status != "finished" {
 			t.Errorf("run = %+v, want exit 143 from inspect and a finished report", r)
+		}
+		if meta := journal(t, r); meta["exit_code"] != 143.0 {
+			t.Errorf("meta.json = %v", meta)
+		}
+	})
+
+	// SPEC §9: if the control plane is unreachable, the Run continues. Its
+	// own Run API listener is closed once the payload has been fetched; the
+	// wall clock still fires, Teardown still runs and leaves the Journal,
+	// and only Docker sees the exit because the finished report cannot land.
+	t.Run("a Run that loses the control plane still finishes", func(t *testing.T) {
+		l, err := net.Listen("tcp", "0.0.0.0:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		gone := &http.Server{Handler: run.API(store, nil)}
+		go gone.Serve(l)
+		t.Cleanup(func() { gone.Close() })
+		alone := *sp
+		alone.ControlPlaneURL = fmt.Sprintf("http://host.docker.internal:%d", l.Addr().(*net.TCPAddr).Port)
+		started, err := alone.Start(t.Context(), config.Agent{
+			Name: "orphan", Kind: "codex", Runner: "local",
+			Prompt: "Run `sleep 120` in the shell, then say done.", Limits: limits(10 * time.Second),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { exec.Command("docker", "rm", "-f", started.Container).Run() })
+		wait(t, started.ID, "fetched its payload", func(r run.Run) bool { return !r.Seen.IsZero() })
+		gone.Close()
+		r := wait(t, started.ID, "reached a terminal state", inspected)
+		t.Logf("run %s: exit %d from %s, last report %q", r.ID, r.ExitCode, r.ExitFrom, r.Status)
+		if r.ExitCode != 143 || r.ExitFrom != run.FromInspect || r.Status == "finished" {
+			t.Errorf("run = %+v, want exit 143 seen only by Docker", r)
 		}
 		if meta := journal(t, r); meta["exit_code"] != 143.0 {
 			t.Errorf("meta.json = %v", meta)

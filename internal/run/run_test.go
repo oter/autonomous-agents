@@ -58,3 +58,80 @@ func TestFirstTerminalStateWinsAndInspectIsAuthoritative(t *testing.T) {
 		t.Errorf("run = %+v, want exit 143 from inspect kept", r)
 	}
 }
+
+// SPEC §9: a per-Run token bucket. Over the limit is refused and counted on
+// the Run as a throttle event; the Run is never made terminal by it. Every
+// request, refused or not, is a sign of life.
+func TestTokenBucketThrottlesAndRecords(t *testing.T) {
+	s := run.NewStore()
+	t0 := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	s.Add(&run.Run{ID: "r1", Token: "t1", Started: t0})
+
+	for i := range run.ThrottleBurst {
+		if !s.Allow("r1", t0) {
+			t.Fatalf("request %d of a fresh bucket refused", i+1)
+		}
+	}
+	if s.Allow("r1", t0) {
+		t.Fatal("request past the burst allowed")
+	}
+	if s.Allow("r1", t0.Add(time.Millisecond)) {
+		t.Fatal("a second request past the burst allowed")
+	}
+	r, _ := s.Get("r1")
+	if r.Throttled != 2 || !r.LastThrottled.Equal(t0.Add(time.Millisecond)) || !r.Seen.Equal(t0.Add(time.Millisecond)) {
+		t.Errorf("run = %+v, want 2 throttle events, last at t0+1ms, seen at t0+1ms", r)
+	}
+	if r.Terminal {
+		t.Error("throttling must never make a Run terminal")
+	}
+
+	// One token per second refills.
+	if !s.Allow("r1", t0.Add(time.Second)) {
+		t.Error("one second later, one token should be back")
+	}
+	if s.Allow("r1", t0.Add(time.Second)) {
+		t.Error("only one token should have refilled")
+	}
+	if s.Allow("unknown", t0) {
+		t.Error("an unknown Run is never allowed")
+	}
+}
+
+// SPEC §9: three missed heartbeats mark a Run stale, once; any request
+// clears it; a terminal Run is never stale.
+func TestMarkStaleAfterThreeMissedHeartbeats(t *testing.T) {
+	s := run.NewStore()
+	t0 := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	s.Add(&run.Run{ID: "r1", Token: "t1", Started: t0})
+
+	if s.MarkStale("r1", t0.Add(run.StaleAfter-time.Second), run.StaleAfter) {
+		t.Error("stale before three heartbeats were missed")
+	}
+	if !s.MarkStale("r1", t0.Add(run.StaleAfter), run.StaleAfter) {
+		t.Error("not stale after three missed heartbeats since start")
+	}
+	if s.MarkStale("r1", t0.Add(run.StaleAfter+time.Second), run.StaleAfter) {
+		t.Error("marked stale twice")
+	}
+	if r, _ := s.Get("r1"); !r.Stale || r.Terminal {
+		t.Errorf("run = %+v, want stale and not terminal", r)
+	}
+
+	s.Allow("r1", t0.Add(2*run.StaleAfter)) // a heartbeat
+	if r, _ := s.Get("r1"); r.Stale {
+		t.Error("a request did not clear stale")
+	}
+	if s.MarkStale("r1", t0.Add(2*run.StaleAfter+time.Second), run.StaleAfter) {
+		t.Error("stale right after a heartbeat")
+	}
+	if !s.MarkStale("r1", t0.Add(3*run.StaleAfter), run.StaleAfter) {
+		t.Error("not stale again three heartbeats after the last request")
+	}
+
+	s.Add(&run.Run{ID: "r2", Token: "t2", Started: t0})
+	s.Finish("r2", 0, run.FromInspect, t0)
+	if s.MarkStale("r2", t0.Add(time.Hour), run.StaleAfter) {
+		t.Error("a terminal Run was marked stale")
+	}
+}

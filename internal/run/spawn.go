@@ -24,6 +24,7 @@ type Spawner struct {
 	Store           *Store
 	Log             *slog.Logger
 	PollInterval    time.Duration // default 5s
+	StaleAfter      time.Duration // default StaleAfter: three missed heartbeats
 }
 
 // Start allocates a run id and RUN_TOKEN, creates and starts the container on
@@ -90,13 +91,22 @@ func (s *Spawner) Start(ctx context.Context, a config.Agent) (Run, error) {
 
 // poll asks Docker until the container exits, then records the outcome.
 // Inspect is the only observer of an unannounced death (ADR-0004) and is
-// authoritative over the container's own report.
+// authoritative over the container's own report. A Run silent for three
+// heartbeats is marked stale on the tick that notices, and that same tick's
+// Inspect is the "immediate" one (SPEC §9): a gap is a hint to ask Docker,
+// never a conclusion. Docker saying "running" leaves the Run alive and
+// flagged; nothing here kills.
 // ponytail: the exited container is kept so its Journal can be read with
 // docker cp; remove it once ticket 05 uploads the Journal.
 func (s *Spawner) poll(client *docker.Client, r Run) {
 	log := cmp.Or(s.Log, slog.Default()).With("run", r.ID)
+	staleAfter := cmp.Or(s.StaleAfter, StaleAfter)
 	for range time.Tick(cmp.Or(s.PollInterval, 5*time.Second)) {
+		stale := s.Store.MarkStale(r.ID, time.Now(), staleAfter)
 		st, err := client.Inspect(context.Background(), r.Container)
+		if stale {
+			log.Warn("run is stale: no request for three heartbeats", "docker_status", st.Status, "err", err)
+		}
 		switch {
 		case errors.Is(err, docker.ErrNotFound):
 			log.Error("container vanished before it exited")

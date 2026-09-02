@@ -24,6 +24,7 @@ type fakeDocker struct {
 	createQuery string
 	create      map[string]any
 	inspects    atomic.Int32
+	running     atomic.Bool // keep reporting running instead of exiting on the second inspect
 }
 
 func newFakeDocker(t *testing.T) (*fakeDocker, string) {
@@ -42,7 +43,7 @@ func newFakeDocker(t *testing.T) (*fakeDocker, string) {
 		w.WriteHeader(204)
 	})
 	mux.HandleFunc("GET /containers/cid123/json", func(w http.ResponseWriter, r *http.Request) {
-		if f.inspects.Add(1) == 1 {
+		if f.inspects.Add(1) == 1 || f.running.Load() {
 			w.Write([]byte(`{"Id":"cid123","State":{"Status":"running","Running":true,"ExitCode":0}}`))
 			return
 		}
@@ -156,5 +157,69 @@ func TestStartUnknownRunner(t *testing.T) {
 	sp := &run.Spawner{Store: run.NewStore(), Runners: map[string]*docker.Client{}}
 	if _, err := sp.Start(t.Context(), config.Agent{Name: "a", Runner: "macmini"}); err == nil {
 		t.Fatal("want error for a Runner with no client")
+	}
+}
+
+// SPEC §9: three missed heartbeats mark the Run stale and the poller asks
+// Docker; Docker saying "running" keeps the Run alive and flagged, a
+// heartbeat clears the flag, and only Docker's exit ends the Run.
+func TestPollerMarksStaleButNeverKills(t *testing.T) {
+	fake, host := newFakeDocker(t)
+	fake.running.Store(true)
+	client, err := docker.New(host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := run.NewStore()
+	sp := &run.Spawner{
+		Image: "agent-base:test", ControlPlaneURL: "http://cp:8082",
+		Runners: map[string]*docker.Client{"local": client}, Store: store,
+		PollInterval: 5 * time.Millisecond, StaleAfter: 40 * time.Millisecond,
+	}
+	r, err := sp.Start(t.Context(), config.Agent{
+		Name: "quiet", Kind: "claude", Runner: "local", Prompt: "x",
+		Limits: config.Limits{WallClock: config.Duration{Duration: time.Minute}, Memory: "1g"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	until := func(what string, cond func(run.Run) bool) run.Run {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if got, _ := store.Get(r.ID); cond(got) {
+				return got
+			}
+			time.Sleep(time.Millisecond)
+		}
+		t.Fatalf("never %s", what)
+		return run.Run{}
+	}
+
+	got := until("stale", func(r run.Run) bool { return r.Stale })
+	if got.Terminal {
+		t.Errorf("a stale Run was ended: %+v", got)
+	}
+	seen := fake.inspects.Load()
+	time.Sleep(30 * time.Millisecond)
+	if fake.inspects.Load() <= seen {
+		t.Error("the poller stopped asking Docker about a stale Run")
+	}
+
+	// A heartbeat over the Run API clears the flag ...
+	if res := call(t, run.API(store, nil), "POST", "/run/status", r.Token, `{"status":"running"}`); res.StatusCode != 204 {
+		t.Fatalf("heartbeat: %d", res.StatusCode)
+	}
+	if got, _ := store.Get(r.ID); got.Stale || got.Status != "running" {
+		t.Errorf("after a heartbeat: %+v, want not stale", got)
+	}
+	// ... and silence marks it again.
+	until("stale again", func(r run.Run) bool { return r.Stale })
+
+	// Only Docker ends it.
+	fake.running.Store(false)
+	got = until("terminal", func(r run.Run) bool { return r.Terminal })
+	if got.ExitCode != 3 || got.ExitFrom != run.FromInspect {
+		t.Errorf("outcome = %+v, want exit 3 from inspect", got)
 	}
 }

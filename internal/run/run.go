@@ -2,11 +2,29 @@
 package run
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"sync"
 	"time"
+)
+
+// HeartbeatInterval is how often the entrypoint reports `running` (SPEC §6).
+// StaleAfter is three missed heartbeats (SPEC §9).
+const (
+	HeartbeatInterval = 30 * time.Second
+	StaleAfter        = 3 * HeartbeatInterval
+)
+
+// The per-Run token bucket (SPEC §9): ThrottleBurst requests at once, then
+// ThrottleRate per second. Generous for a Run that needs a secret per
+// command; a shell loop hits it in seconds.
+// ponytail: one fixed bucket for every Run; a per-Agent limit in the YAML
+// if one Agent ever legitimately needs more.
+const (
+	ThrottleBurst = 30
+	ThrottleRate  = 1.0
 )
 
 // NewID allocates a run id in the SPEC §5 format: 20260831-201204-<agent>-<4 hex>.
@@ -23,6 +41,14 @@ func NewToken() string {
 	return base64.RawURLEncoding.EncodeToString(b[:])
 }
 
+// IsToken reports whether s has the shape NewToken mints. A bearer without
+// it is a bad token (401); one with it that no Run holds is an unknown Run
+// (404) — after a control-plane restart, an orphan container.
+func IsToken(s string) bool {
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	return err == nil && len(b) == 32
+}
+
 // Run is one execution of one Agent (CONTEXT.md).
 type Run struct {
 	ID        string
@@ -32,10 +58,23 @@ type Run struct {
 	Token     string
 	Started   time.Time
 
+	// Seen is the last request over the Run API, on any route, allowed or
+	// throttled: every request is a sign of life. Stale is set by the
+	// poller after StaleAfter without one, and cleared by the next.
+	Seen  time.Time
+	Stale bool
+
 	// Last status report from the container over the Run API.
 	Status   string
 	Message  string
 	Reported time.Time
+
+	// Throttle events: how many requests were refused with 429, and when
+	// the last one was. Surfaced in the UI and the Journal; never a kill.
+	Throttled     int
+	LastThrottled time.Time
+	tokens        float64
+	refilled      time.Time
 
 	// Outcome. Terminal is set by the first terminal state; ExitFrom records
 	// who set ExitCode.
@@ -99,11 +138,50 @@ func (s *Store) ByToken(token string) (Run, bool) {
 	return s.Get(id)
 }
 
-// Report records a status report from the container.
+// Allow records a request from the Run at `at` and reports whether it is
+// within the Run's token bucket. A refusal is a throttle event, counted on
+// the Run; nothing here ends a Run (SPEC §9: throttled, never auto-killed).
+func (s *Store) Allow(id string, at time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.byID[id]
+	if !ok {
+		return false
+	}
+	r.Seen, r.Stale = at, false
+	// A fresh bucket has refilled==zero, so the elapsed time is huge and the
+	// bucket starts full.
+	r.tokens = min(ThrottleBurst, r.tokens+at.Sub(r.refilled).Seconds()*ThrottleRate)
+	r.refilled = at
+	if r.tokens < 1 {
+		r.Throttled, r.LastThrottled = r.Throttled+1, at
+		return false
+	}
+	r.tokens--
+	return true
+}
+
+// MarkStale flags a live Run that has made no request for `after` — three
+// missed heartbeats (SPEC §9). Returns whether the Run newly became stale,
+// which is a hint to ask Docker, never a conclusion. Any request clears it.
+func (s *Store) MarkStale(id string, at time.Time, after time.Duration) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.byID[id]
+	if !ok || r.Terminal || r.Stale || at.Sub(cmp.Or(r.Seen, r.Started)) < after {
+		return false
+	}
+	r.Stale = true
+	return true
+}
+
+// Report records a status report from the container. A terminal Run keeps
+// its last accepted report: the API refuses such requests with 403, and
+// this closes the window between that check and the record.
 func (s *Store) Report(id, status, message string, at time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if r, ok := s.byID[id]; ok {
+	if r, ok := s.byID[id]; ok && !r.Terminal {
 		r.Status, r.Message, r.Reported = status, message, at
 	}
 }

@@ -45,11 +45,35 @@ func API(store *Store, log *slog.Logger) http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	// SPEC §9 status semantics, in order: 401 bad token, 404 unknown Run,
+	// 403 terminal Run, 429 throttled. Allow records the request as a sign
+	// of life before its bucket decides, so a throttled Run is noisy, never
+	// stale.
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		run, ok := store.ByToken(tok)
-		if !bearer || !ok {
+		if !bearer || !IsToken(tok) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		run, ok := store.ByToken(tok)
+		if !ok {
+			// An orphan container from before a restart, or a forged token.
+			log.Warn("request with a token no Run holds", "path", r.URL.Path, "remote", r.RemoteAddr)
+			http.Error(w, "unknown run", http.StatusNotFound)
+			return
+		}
+		if run.Terminal {
+			// A zombie process, or something stranger: worth not burying.
+			log.Warn("request from a terminal Run", "run", run.ID, "path", r.URL.Path, "exit_code", run.ExitCode, "exit_from", run.ExitFrom)
+			http.Error(w, "run is terminal", http.StatusForbidden)
+			return
+		}
+		if !store.Allow(run.ID, time.Now()) {
+			if run.Throttled == 0 {
+				log.Warn("run throttled", "run", run.ID, "path", r.URL.Path)
+			}
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "throttled", http.StatusTooManyRequests)
 			return
 		}
 		mux.ServeHTTP(w, r.WithContext(withRun(r.Context(), run)))

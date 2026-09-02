@@ -51,6 +51,17 @@ The durable record of a Run: what it was asked to do, what it did, and what it
 concluded. Journals for every Agent accumulate in one private repository so
 that behaviour can be analysed across Runs.
 
+## Heartbeat
+
+A Run's periodic `running` report to the control plane over the Run API. A
+Run that has made no request for three heartbeats is **stale**: a hint to
+ask the Runner about it, never a conclusion about it.
+
+## Throttle event
+
+One request from a Run refused for exceeding that Run's rate limit. Counted
+on the Run and surfaced; never a reason to end it.
+
 ## Teardown
 
 The phase of a Run after the agent process exits, by any means including being
