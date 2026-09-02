@@ -194,8 +194,9 @@ registry beyond this one image.
 
 Contains: `claude`, `codex`, the `skills` CLI (`npm i -g skills`, so `npx` does
 not re-download it every Run), `curl`, `jq`, `git`, `tar`, `zstd`, `iptables`,
-`dsecrets`, and the entrypoint. It does **not** contain `age` — decryption is the
-control plane's job.
+`dsecrets`, and the entrypoint. For the work itself: Node 24 with `yarn` via
+corepack, the Go toolchain, and `build-essential`. It does **not** contain
+`age` — decryption is the control plane's job.
 
 Skills are installed **project-scoped** at container start, so both CLIs find
 them. **Never pass `claude --bare`**: the documentation recommends it for CI, but
