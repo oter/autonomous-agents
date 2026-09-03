@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -74,6 +75,7 @@ func TestWalkingSkeleton(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := run.NewStore()
+	identity, encrypt := newIdentity(t)
 	listen := func(t *testing.T, h http.Handler) (*http.Server, int) {
 		t.Helper()
 		l, err := net.Listen("tcp", "0.0.0.0:0")
@@ -88,7 +90,7 @@ func TestWalkingSkeleton(t *testing.T) {
 	objects := &fakeBucket{objects: map[string][]byte{}}
 	_, bucketPort := listen(t, objects)
 	bucket := run.Bucket{URL: mustURL(t, fmt.Sprintf("http://host.docker.internal:%d/agentruns", bucketPort)), Region: "auto", AccessKey: "test", SecretKey: "test"}
-	_, cpPort := listen(t, run.API(store, bucket, nil))
+	_, cpPort := listen(t, run.API(store, bucket, identity, nil))
 	sp := &run.Spawner{
 		Image:           image,
 		StopGrace:       90 * time.Second,
@@ -96,6 +98,7 @@ func TestWalkingSkeleton(t *testing.T) {
 		Runners:         map[string]*docker.Client{"local": client},
 		Store:           store,
 		Bucket:          bucket,
+		Identity:        identity,
 		// The bucket URL names the host as containers see it; this process
 		// cannot resolve that name, so its HEADs dial the local port instead.
 		HTTP: &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
@@ -185,10 +188,21 @@ func TestWalkingSkeleton(t *testing.T) {
 		return config.Limits{WallClock: config.Duration{Duration: wall}, Memory: "1g", CPUs: "1"}
 	}
 
+	// The model credential is an Allowlist value, decrypted at spawn (SPEC
+	// §8); the control plane's environment is not a source. Here the
+	// subscription token in this shell, if any, is encrypted to the test's
+	// own master identity, which is what an Agent YAML would carry.
+	credential := func() map[string]string {
+		if tok := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"); tok != "" {
+			return map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": encrypt(tok)}
+		}
+		return nil
+	}
+
 	t.Run("trivial Run completes", func(t *testing.T) {
 		started, err := sp.Start(t.Context(), config.Agent{
 			Name: "hello", Kind: "claude", Runner: "local", SHA256: "0123abcd",
-			Prompt: "Reply with the single word OK.", Limits: limits(5 * time.Minute),
+			Prompt: "Reply with the single word OK.", Limits: limits(5 * time.Minute), Secrets: credential(),
 		}, trigger)
 		if err != nil {
 			t.Fatal(err)
@@ -241,6 +255,64 @@ func TestWalkingSkeleton(t *testing.T) {
 		}
 	})
 
+	// The ticket 06 demo with no model in the way: the image's own dsecrets
+	// against the real Run API. An allowed name round-trips byte-exact into
+	// the exec'd child's environment; a name outside the Allowlist is a 403
+	// naming it, the child never runs, and no value comes back with it.
+	t.Run("dsecrets round-trips an allowed name and names a denied one", func(t *testing.T) {
+		tok := run.NewToken()
+		store.Add(&run.Run{ID: run.NewID(time.Now(), "secretive"), Agent: "secretive", Token: tok, Started: time.Now(),
+			Secrets: map[string]string{"DEMO_SECRET": encrypt("s3cret value\n")}})
+		dsecrets := func(args ...string) ([]byte, error) {
+			return exec.Command("docker", append([]string{"run", "--rm", "-e", "RUN_TOKEN=" + tok, "-e", "CONTROL_PLANE_URL=" + sp.ControlPlaneURL, "--entrypoint", "dsecrets", image}, args...)...).CombinedOutput()
+		}
+		out, err := dsecrets("DEMO_SECRET", "--", "sh", "-c", `printf %s "$DEMO_SECRET"`)
+		if err != nil || string(out) != "s3cret value\n" {
+			t.Errorf("allowed name: %v %q, want the value byte-exact", err, out)
+		}
+		out, err = dsecrets("DEMO_SECRET,AWS_SECRET", "--", "sh", "-c", `echo ran "$DEMO_SECRET"`)
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 3 || !strings.Contains(string(out), "AWS_SECRET") || strings.Contains(string(out), "ran") || strings.Contains(string(out), "s3cret") {
+			t.Errorf("denied name: %v %q; want exit 3 naming AWS_SECRET, no child, no value", err, out)
+		}
+		t.Logf("denied: %s", out)
+	})
+
+	// Secrets end to end: a real claude Run, credential from the Allowlist,
+	// whose agent reaches a second secret through dsecrets from its own
+	// shell as the unprivileged user. The value then sits in the stream,
+	// which is SPEC §10's accepted ceiling and what this asserts on.
+	t.Run("a Run's agent reaches a secret through dsecrets", func(t *testing.T) {
+		secrets := credential()
+		if secrets == nil {
+			t.Skip("set CLAUDE_CODE_OAUTH_TOKEN for a Run whose agent uses dsecrets")
+		}
+		secrets["DEMO_SECRET"] = encrypt("marmalade-7f3a")
+		started, err := sp.Start(t.Context(), config.Agent{
+			Name: "secretive", Kind: "claude", Runner: "local", Secrets: secrets, Limits: limits(5 * time.Minute),
+			Prompt: "Run the shell command `dsecrets DEMO_SECRET -- sh -c 'echo $DEMO_SECRET'` and reply with exactly its output.",
+		}, trigger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { exec.Command("docker", "rm", "-f", started.Container).Run() })
+		r := wait(t, started.ID, "reached a terminal state", inspected)
+		t.Logf("run %s: exit %d from %s, last report %q %q", r.ID, r.ExitCode, r.ExitFrom, r.Status, r.Message)
+		if meta := journal(t, r); r.ExitCode != 0 || meta["terminal_reason"] != "completed" {
+			t.Errorf("exit %d, meta = %v; want 0 and completed", r.ExitCode, meta)
+		}
+		archive, _ := objects.get(r.Agent + "/" + r.ID + "/run.tar.zst")
+		extract := exec.Command("docker", "run", "--rm", "-i", "--entrypoint", "tar", image, "--zstd", "-xOf", "-", "./stream.jsonl")
+		extract.Stdin = bytes.NewReader(archive)
+		stream, err := extract.Output()
+		if err != nil {
+			t.Fatalf("extracting stream.jsonl: %v", err)
+		}
+		if !strings.Contains(string(stream), "marmalade-7f3a") {
+			t.Errorf("the agent never echoed the secret:\n%s", stream)
+		}
+	})
+
 	// SPEC §9: if the control plane is unreachable, the Run continues. Its
 	// own Run API listener is closed once the payload has been fetched; the
 	// wall clock still fires, Teardown still runs and leaves the Journal in
@@ -248,7 +320,7 @@ func TestWalkingSkeleton(t *testing.T) {
 	// journal-urls fetch nor the finished report can land. The container is
 	// kept: it is the only copy.
 	t.Run("a Run that loses the control plane still finishes", func(t *testing.T) {
-		gone, gonePort := listen(t, run.API(store, bucket, nil))
+		gone, gonePort := listen(t, run.API(store, bucket, identity, nil))
 		alone := *sp
 		alone.ControlPlaneURL = fmt.Sprintf("http://host.docker.internal:%d", gonePort)
 		started, err := alone.Start(t.Context(), config.Agent{

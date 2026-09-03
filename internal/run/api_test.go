@@ -1,8 +1,10 @@
 package run_test
 
 import (
+	"bytes"
 	"encoding/json/v2"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -29,7 +31,7 @@ func TestRunAPI(t *testing.T) {
 	s := run.NewStore()
 	good := run.NewToken()
 	s.Add(&run.Run{ID: "r1", Token: good, Started: time.Now()})
-	h := run.API(s, run.Bucket{}, nil)
+	h := run.API(s, run.Bucket{}, "", nil)
 
 	for _, tok := range []string{"", "bad"} {
 		if res := call(t, h, "GET", "/run/payload", tok, ""); res.StatusCode != 401 {
@@ -79,7 +81,7 @@ func TestRunAPIStatusSemantics(t *testing.T) {
 	s.Add(&run.Run{ID: "live", Token: live, Started: time.Now()})
 	s.Add(&run.Run{ID: "done", Token: done, Started: time.Now()})
 	s.Finish("done", 0, run.FromInspect, time.Now())
-	h := run.API(s, run.Bucket{}, nil)
+	h := run.API(s, run.Bucket{}, "", nil)
 
 	if res := call(t, h, "GET", "/run/payload", run.NewToken(), ""); res.StatusCode != 404 {
 		t.Errorf("unknown Run: %d, want 404", res.StatusCode)
@@ -116,7 +118,7 @@ func TestRunAPIStatusSemantics(t *testing.T) {
 func TestRunAPIRoutesNothingElse(t *testing.T) {
 	s := run.NewStore()
 	s.Add(&run.Run{ID: "r2", Token: run.NewToken(), Started: time.Now()})
-	h := run.API(s, run.Bucket{}, nil)
+	h := run.API(s, run.Bucket{}, "", nil)
 	// A fresh Run per path: probing is throttled like any other request.
 	fresh := func(id string) string {
 		tok := run.NewToken()
@@ -135,13 +137,70 @@ func TestRunAPIRoutesNothingElse(t *testing.T) {
 			}
 		}
 	}
-	// The two routes that exist accept exactly one method each.
+	// Each route that exists accepts exactly one method.
 	tok := fresh("r1")
-	if res := call(t, h, "POST", "/run/payload", tok, "{}"); res.StatusCode != 405 {
-		t.Errorf("POST /run/payload: %d, want 405", res.StatusCode)
+	for _, wrong := range []struct{ method, path string }{{"POST", "/run/payload"}, {"GET", "/run/status"}, {"GET", "/run/secrets"}} {
+		if res := call(t, h, wrong.method, wrong.path, tok, "{}"); res.StatusCode != 405 {
+			t.Errorf("%s %s: %d, want 405", wrong.method, wrong.path, res.StatusCode)
+		}
 	}
-	if res := call(t, h, "GET", "/run/status", tok, ""); res.StatusCode != 405 {
-		t.Errorf("GET /run/status: %d, want 405", res.StatusCode)
+}
+
+// SPEC §8/§9, ADR-0003: allowed names come back decrypted, byte-exact; any
+// name outside the Allowlist is a 403 naming every denied name, never a
+// silent omission, and nothing is decrypted for that request. The names,
+// never the values, are logged; a value is in the success body and nowhere
+// else.
+func TestSecretsEndpoint(t *testing.T) {
+	identity, encrypt := newIdentity(t)
+	const linear, github = "lin_api_x=y z\n", "ghp_0123"
+	s := run.NewStore()
+	tok := run.NewToken()
+	s.Add(&run.Run{ID: "r1", Agent: "triage", Token: tok, Started: time.Now(),
+		Secrets: map[string]string{"LINEAR_API_KEY": encrypt(linear), "GITHUB_TOKEN": encrypt(github)}})
+	var logged bytes.Buffer
+	h := run.API(s, run.Bucket{}, identity, slog.New(slog.NewTextHandler(&logged, nil)))
+
+	res := call(t, h, "POST", "/run/secrets", tok, `{"names":["LINEAR_API_KEY","GITHUB_TOKEN"]}`)
+	var values map[string]string
+	if err := json.UnmarshalRead(res.Body, &values); err != nil || res.StatusCode != 200 {
+		t.Fatalf("allowed names: %d %v", res.StatusCode, err)
+	}
+	if values["LINEAR_API_KEY"] != linear || values["GITHUB_TOKEN"] != github || len(values) != 2 {
+		t.Errorf("values = %q", values)
+	}
+
+	res = call(t, h, "POST", "/run/secrets", tok, `{"names":["LINEAR_API_KEY","AWS_SECRET","STRIPE_KEY"]}`)
+	body, _ := io.ReadAll(res.Body)
+	var denial struct {
+		Denied []string `json:"denied"`
+	}
+	if err := json.Unmarshal(body, &denial); err != nil || res.StatusCode != 403 {
+		t.Fatalf("a denied name: %d %s %v", res.StatusCode, body, err)
+	}
+	if strings.Join(denial.Denied, ",") != "AWS_SECRET,STRIPE_KEY" {
+		t.Errorf("denied = %v, want both denied names and nothing else", denial.Denied)
+	}
+	if strings.Contains(string(body), linear) {
+		t.Errorf("a denied request leaked an allowed value: %s", body)
+	}
+	if res := call(t, h, "POST", "/run/secrets", tok, `{"names":[]}`); res.StatusCode != 200 {
+		t.Errorf("no names: %d, want 200 and an empty map", res.StatusCode)
+	}
+	if res := call(t, h, "POST", "/run/secrets", tok, `not json`); res.StatusCode != 400 {
+		t.Errorf("bad json: %d, want 400", res.StatusCode)
+	}
+
+	log := logged.String()
+	for _, name := range []string{"LINEAR_API_KEY", "AWS_SECRET", "STRIPE_KEY", "triage", "r1"} {
+		if !strings.Contains(log, name) {
+			t.Errorf("log does not record %s:\n%s", name, log)
+		}
+	}
+	for _, value := range []string{linear, github, "lin_api", "ghp_"} {
+		if strings.Contains(log, value) {
+			t.Errorf("a secret value is in the log:\n%s", log)
+		}
 	}
 }
 
@@ -153,7 +212,7 @@ func TestJournalURLs(t *testing.T) {
 	tok := run.NewToken()
 	s.Add(&run.Run{ID: "20260902-140000-hello-1a2b", Agent: "hello", Token: tok, Started: time.Now()})
 	bucket := run.Bucket{URL: mustURL(t, "https://acct.r2.cloudflarestorage.com/agentruns"), Region: "auto", AccessKey: "AKIDEXAMPLE", SecretKey: "s3cr3t"}
-	h := run.API(s, bucket, nil)
+	h := run.API(s, bucket, "", nil)
 	if res := call(t, h, "POST", "/run/journal-urls", tok, ""); res.StatusCode != 405 {
 		t.Errorf("POST /run/journal-urls: %d, want 405", res.StatusCode)
 	}

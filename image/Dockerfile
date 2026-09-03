@@ -39,5 +39,6 @@ RUN claude --version && codex --version && skills --version \
 # The entrypoint is baked, not mounted: the control plane cannot write files
 # to a remote Runner, it only has the Docker API (SPEC §6).
 COPY --chmod=644 stream.jq /usr/local/share/stream.jq
+COPY --chmod=755 dsecrets.sh /usr/local/bin/dsecrets
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint
 ENTRYPOINT ["/usr/local/bin/entrypoint"]

@@ -63,3 +63,16 @@ consumes it, and no channel design changes that.
 Plaintext secrets now travel over the network. On a private network this is
 tolerable, but the Run API's transport security is a real decision and belongs to
 the Run API ticket, not to this one.
+
+## Amendments
+
+**2026-09-03, from ticket 06.** Built as decided, with two refinements. The
+model credential exception stands, with the name corrected for claude: the
+CLI runs on the Claude subscription, so the value is `CLAUDE_CODE_OAUTH_TOKEN`
+from `claude setup-token`, never `ANTHROPIC_API_KEY`, which the CLI would
+prefer and bill API credits with (ticket 03). It is the one Allowlist value
+decrypted at spawn rather than on demand, and the Allowlist is its sole
+source: the control plane's own environment no longer supplies it, not even
+as a fallback. And the master identity is read at every use rather than held;
+nothing is decrypted at startup, and a deploy whose key file is missing,
+readable by others, or malformed fails before it serves.

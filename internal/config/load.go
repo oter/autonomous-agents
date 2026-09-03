@@ -9,12 +9,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"filippo.io/age/armor"
 	"gopkg.in/yaml.v3"
 )
 
@@ -89,7 +92,8 @@ type Agent struct {
 	Skills      []string `yaml:"skills"`
 	Repos       []Repo   `yaml:"repos"`
 	// Secrets is the glossary's Allowlist: the set of secret names this
-	// Agent's Runs are permitted to decrypt, mapped to their encrypted values.
+	// Agent's Runs are permitted to decrypt, mapped to their armored age
+	// ciphertext. A name is the environment variable dsecrets sets (SPEC §8).
 	Secrets       map[string]string `yaml:"secrets"`
 	Limits        Limits            `yaml:"limits"`
 	ExtraArgs     []string          `yaml:"extra_args"`
@@ -169,11 +173,12 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	for key, missing := range map[string]bool{
-		"image":             cfg.Image == "",
-		"stop_grace":        cfg.StopGrace.Duration <= 0,
-		"control_plane_url": cfg.ControlPlaneURL == "",
-		"journal.endpoint":  cfg.Journal.Endpoint == "",
-		"journal.bucket":    cfg.Journal.Bucket == "",
+		"image":                   cfg.Image == "",
+		"stop_grace":              cfg.StopGrace.Duration <= 0,
+		"control_plane_url":       cfg.ControlPlaneURL == "",
+		"journal.endpoint":        cfg.Journal.Endpoint == "",
+		"journal.bucket":          cfg.Journal.Bucket == "",
+		"secrets.master_identity": cfg.Secrets.MasterIdentity == "",
 	} {
 		if missing {
 			return nil, fmt.Errorf("%s: %s is required", path, key)
@@ -249,6 +254,19 @@ func (a *Agent) validate(runners map[string]Runner) error {
 	if _, err := a.Limits.NanoCPUs(); err != nil {
 		return err
 	}
+	for name, ct := range a.Secrets {
+		if !envName.MatchString(name) {
+			return fmt.Errorf("secrets.%s: a secret name must be an environment variable name", name)
+		}
+		// Only the armor is checked, which needs no key: nothing is decrypted
+		// at startup. This is what catches a `>` folded block, which joins
+		// the armor lines and mangles it (SPEC §2). The armor error is not
+		// repeated: it quotes the offending line, which for a value pasted
+		// in plaintext is the value.
+		if _, err := io.Copy(io.Discard, armor.NewReader(strings.NewReader(ct))); err != nil {
+			return fmt.Errorf("secrets.%s: not armored age ciphertext, use a | literal block", name)
+		}
+	}
 	for i, tr := range a.Triggers {
 		if err := tr.validate(); err != nil {
 			return fmt.Errorf("triggers[%d]: %w", i, err)
@@ -256,6 +274,8 @@ func (a *Agent) validate(runners map[string]Runner) error {
 	}
 	return nil
 }
+
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (tr *Trigger) validate() error {
 	switch tr.Kind {

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -24,8 +23,9 @@ type Spawner struct {
 	ControlPlaneURL string
 	Runners         map[string]*docker.Client
 	Store           *Store
-	Bucket          Bucket       // where Journals land; looked at before an exited container is removed
-	HTTP            *http.Client // for that look; default journalHTTP
+	Bucket          Bucket         // where Journals land; looked at before an exited container is removed
+	HTTP            *http.Client   // for that look; default journalHTTP
+	Identity        MasterIdentity // decrypts the model credential out of the Allowlist at spawn
 	Log             *slog.Logger
 	PollInterval    time.Duration // default 5s
 	StaleAfter      time.Duration // default StaleAfter: three missed heartbeats
@@ -55,7 +55,7 @@ func (s *Spawner) Start(ctx context.Context, a config.Agent, trig Trigger) (Run,
 	}
 
 	now := time.Now()
-	r := &Run{ID: NewID(now, a.Name), Agent: a.Name, Runner: a.Runner, Trigger: trig, Token: NewToken(), Started: now}
+	r := &Run{ID: NewID(now, a.Name), Agent: a.Name, Runner: a.Runner, Trigger: trig, Token: NewToken(), Started: now, Secrets: a.Secrets}
 	// The at-start facts of meta.json that only the control plane knows
 	// (SPEC §10); the entrypoint merges them in verbatim. The prompt and
 	// personality are already in the environment under their own names.
@@ -89,13 +89,20 @@ func (s *Spawner) Start(ctx context.Context, a config.Agent, trig Trigger) (Run,
 		"WALL_CLOCK_SECONDS=" + strconv.Itoa(int(a.Limits.WallClock.Seconds())),
 		"RUN_META=" + string(meta),
 	}
-	// ponytail: the model credential is passed through from the control
-	// plane's own environment until ticket 06 decrypts it from the Allowlist.
-	// claude runs on the Claude subscription only (`claude setup-token` →
-	// CLAUDE_CODE_OAUTH_TOKEN). ANTHROPIC_API_KEY is deliberately never
-	// forwarded: the CLI would prefer it and bill API credits instead.
+	// The accepted hole (SPEC §8): the model credential is plaintext in the
+	// agent's own environment because the CLI consumes it, so it is the one
+	// Allowlist value decrypted here rather than on demand. Everything else
+	// stays behind dsecrets. claude runs on the Claude subscription only
+	// (`claude setup-token` → CLAUDE_CODE_OAUTH_TOKEN); ANTHROPIC_API_KEY is
+	// not looked for, since the CLI would prefer it and bill API credits.
+	// The control plane's own environment is never a source: an Agent that
+	// declares no credential runs without one, and its Journal says so.
 	credentialVar := map[string]string{"claude": "CLAUDE_CODE_OAUTH_TOKEN", "codex": "CODEX_API_KEY"}[a.Kind]
-	if v := os.Getenv(credentialVar); v != "" {
+	if ct, ok := a.Secrets[credentialVar]; ok {
+		v, err := s.Identity.Decrypt(ct)
+		if err != nil {
+			return Run{}, fmt.Errorf("secret %s: %w", credentialVar, err)
+		}
 		env = append(env, credentialVar+"="+v)
 	}
 

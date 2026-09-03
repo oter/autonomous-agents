@@ -61,7 +61,10 @@ repos:                         # default: []
     path: workspace            # cloned to /run/workspace
 
 secrets:                       # default: {} — this map IS the Allowlist
-  ANTHROPIC_API_KEY: |
+  CLAUDE_CODE_OAUTH_TOKEN: |   # the model credential, decrypted at spawn (§8)
+    -----BEGIN AGE ENCRYPTED FILE-----
+    ...
+  LINEAR_API_KEY: |            # everything else: dsecrets, on demand
     -----BEGIN AGE ENCRYPTED FILE-----
     ...
 
@@ -115,7 +118,14 @@ request's head SHA, say — is the agent's own job, done by reading
 
 **`secrets` is the Allowlist.** Values are age ciphertext encrypted to the
 control plane's master identity. Use a `|` literal block, never `>` — folded
-scalars mangle armored age.
+scalars mangle armored age; startup checks the armor of every value, with no
+key, and rejects a mangled one. A name is the environment variable `dsecrets`
+sets (§8), so it must be one. The model credential is one of the values —
+`CLAUDE_CODE_OAUTH_TOKEN` for claude, from `claude setup-token`, since claude
+runs on the subscription and never on `ANTHROPIC_API_KEY`; `CODEX_API_KEY` for
+codex — and it is decrypted at spawn into the agent's environment. An Agent
+that declares no credential runs without one, and its Journal says so. The
+control plane's own environment is never a source.
 
 **Validation**: a malformed Agent file **fails the entire startup**. Configuration
 comes from reviewed git, and a loudly failed deploy beats one Agent silently not
@@ -151,7 +161,7 @@ runners:
     max_concurrent: 2
 
 secrets:
-  master_identity: /etc/autonomous-agents/age-master.key   # 0600
+  master_identity: /etc/autonomous-agents/age-master.key   # 0600, required
 
 journal:
   endpoint: https://<account>.r2.cloudflarestorage.com
@@ -166,6 +176,13 @@ journal:
 GitHub live on the internet and cannot POST to a private network, so `/hooks/*`
 is public and guarded solely by the per-Agent HMAC or bearer secret. The UI and
 the Run API are reachable only over the tailnet.
+
+**The master identity is read at every use, not held.** The file must be mode
+0600; a deploy whose key is missing, readable by others, or malformed fails at
+startup, before it serves. Nothing is decrypted at startup: a value is
+decrypted when a Run asks for it over the Run API (§8, §9), or at spawn for the
+model credential. The identity never enters the image or a container
+([ADR-0003](docs/adr/0003-secrets-over-the-run-api.md)).
 
 **Both Runners are plain unix sockets, so the control plane branches on
 nothing.** The remote one is a socket forwarded by an `autossh` sidecar:
@@ -219,7 +236,8 @@ error, and no way to tell.
 3. It allocates a run id — `20260831-201204-<agent>-<4 hex>` — and mints an
    opaque `RUN_TOKEN`.
 4. It creates the container on the Agent's Runner with `--cap-add NET_ADMIN`,
-   the configured memory and CPU limits, and the per-Run environment.
+   the configured memory and CPU limits, and the per-Run environment, which
+   carries the model credential decrypted from the Allowlist (§8).
 5. The entrypoint runs (§6).
 6. The control plane polls `ContainerInspect` and receives heartbeats.
 7. Teardown pushes the work branch and uploads the Journal.
@@ -377,10 +395,14 @@ shift
 [ "${1:-}" = "--" ] || { echo "dsecrets: expected -- before the command" >&2; exit 2; }
 shift
 
-resp=$(curl -fsS --max-time 10 \
+nl='
+'
+resp=$(curl -sS --fail-with-body --retry 3 --max-time 10 \
   -H "Authorization: Bearer $RUN_TOKEN" -H 'Content-Type: application/json' \
   --data "$(jq -cn --arg n "$names" '{names: ($n | split(","))}')" \
-  "$CONTROL_PLANE_URL/run/secrets")
+  "$CONTROL_PLANE_URL/run/secrets") || refused=$?
+resp=${resp##*"$nl"}
+[ -z "${refused:-}" ] || { echo "dsecrets: request failed${resp:+: $resp}" >&2; exit 3; }
 
 for n in $(echo "$names" | tr ',' ' '); do
   printf '%s' "$resp" | jq -e --arg n "$n" 'has($n)' >/dev/null || {
@@ -399,13 +421,26 @@ exec "$@"
   broken: a command substitution's exit status is its *last* command.
 - **`jq -j` plus the `X` sentinel** keeps values byte-exact — `-j` drops jq's
   added newline, the sentinel survives `$()` stripping a genuine one.
+- **`--fail-with-body`, never `-f`.** A refusal's body names the denied names
+  (§9), and `-f` would discard it: the refusal would be `curl: (22)` and
+  nothing else, which is the silent omission this tool exists to refuse.
+- **`--retry 3`, and then the last line.** A 429 is a wait for `Retry-After`,
+  never a denial (§9). Measured: curl leaves a refused attempt's body in front
+  of the reply on stdout, so the reply is taken as the last line — which every
+  reply of this endpoint is.
 - **No file sink and no decrypt-everything mode.** Naming what a command needs is
   the entire discipline.
 - The secret name **is** the environment variable name.
+- **Access is logged; values are not.** Every grant and every denial is a
+  control-plane log line with the Run and the names
+  ([ADR-0003](docs/adr/0003-secrets-over-the-run-api.md)). A value appears in
+  the success body and nowhere else: not in a log, not in an error, not in a
+  denial.
 
-**The accepted hole**: the model credential (`ANTHROPIC_API_KEY` /
+**The accepted hole**: the model credential (`CLAUDE_CODE_OAUTH_TOKEN` /
 `CODEX_API_KEY`) is plaintext in the agent's own environment, because the CLI
-consumes it. So the guarantee is the narrower one — an agent can always read the
+consumes it; it is the one Allowlist value decrypted at spawn rather than on
+demand. So the guarantee is the narrower one — an agent can always read the
 credential it is currently spending, and everything else stays behind
 `dsecrets`.
 
@@ -424,9 +459,11 @@ POST /run/secrets      → {names:[...]} → 200 {NAME: value} | 403 {denied:[..
 GET  /run/journal-urls → 200 {meta: <presigned PUT>, archive: <presigned PUT>, throttle_events: n}
 
 401 absent/bad token · 403 denied or terminal Run · 404 unknown Run · 429 throttled
+500 a value that does not decrypt — a misconfigured Agent, logged by name
 ```
 
-- **A denied name is a 403 naming the names, never a silent omission.**
+- **A denied name is a 403 naming the names, never a silent omission**, and
+  nothing is decrypted for that request.
 - **The token is opaque and stored, not a JWT** — the control plane already holds
   a Run record, so revocation is instant and there is no denylist to maintain.
   The token is the only identity the API sees, so a *bad* token is one that

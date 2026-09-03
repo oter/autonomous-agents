@@ -446,3 +446,42 @@ func TestJournalRequiredAtStartup(t *testing.T) {
 		t.Errorf("region = %q, want us-east-1", cfg.Journal.Region)
 	}
 }
+
+// SPEC §2: the secrets map is the Allowlist. A name is the environment
+// variable dsecrets exports, so it must be one; a value must be armored age
+// ciphertext in a | literal block, because a > folded block joins the armor
+// lines and mangles it. Nothing is decrypted at startup: the armor check
+// needs no key, and the placeholder ciphertext below is not real.
+func TestSecretsValidatedAtStartup(t *testing.T) {
+	const armored = "    -----BEGIN AGE ENCRYPTED FILE-----\n    YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBQbGFjZWhvbGRlcgo=\n    -----END AGE ENCRYPTED FILE-----\n"
+	err := loadErr(t, "a.yaml", minimalAgent+"secrets:\n  my-key: |\n"+armored)
+	if !strings.Contains(err.Error(), "secrets.my-key") {
+		t.Errorf("error does not name the bad secret: %v", err)
+	}
+	err = loadErr(t, "a.yaml", minimalAgent+"secrets:\n  LINEAR_API_KEY: >\n"+armored)
+	if !strings.Contains(err.Error(), "secrets.LINEAR_API_KEY") || !strings.Contains(err.Error(), "|") {
+		t.Errorf("folded block: err = %v, want it named with the | hint", err)
+	}
+	// A value pasted in plaintext is refused, and the refusal does not
+	// repeat it: age's own armor error quotes the offending line.
+	if err := loadErr(t, "a.yaml", minimalAgent+"secrets:\n  LINEAR_API_KEY: lin_api_plaintext\n"); strings.Contains(err.Error(), "lin_api_plaintext") {
+		t.Errorf("the plaintext value is in the startup error: %v", err)
+	}
+
+	cfg, err := config.Load(writeTree(t, validControlPlane, map[string]string{"a.yaml": minimalAgent + "secrets:\n  LINEAR_API_KEY: |\n" + armored}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Agents[0].Secrets["LINEAR_API_KEY"]; !strings.HasPrefix(got, "-----BEGIN AGE ENCRYPTED FILE-----\n") || !strings.HasSuffix(got, "-----END AGE ENCRYPTED FILE-----\n") {
+		t.Errorf("ciphertext = %q, want the armor verbatim", got)
+	}
+}
+
+// SPEC §3: the master identity is what turns an Allowlist into values; a
+// control plane without one cannot authenticate a single CLI.
+func TestMasterIdentityRequiredAtStartup(t *testing.T) {
+	cfgPath := writeTree(t, strings.Replace(validControlPlane, "  master_identity: /etc/autonomous-agents/age-master.key\n", "", 1), map[string]string{"a.yaml": minimalAgent})
+	if _, err := config.Load(cfgPath); err == nil || !strings.Contains(err.Error(), "secrets.master_identity") {
+		t.Errorf("without secrets.master_identity: err = %v, want it named as required", err)
+	}
+}

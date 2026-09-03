@@ -68,6 +68,10 @@ type Run struct {
 	Container string
 	Token     string
 	Started   time.Time
+	// Secrets is the Agent's Allowlist as it stood at spawn: the names this
+	// Run may ask for over the Run API, each mapped to its age ciphertext.
+	// The control plane decrypts a value only when asked for it (SPEC §8).
+	Secrets map[string]string
 
 	// Seen is the last request over the Run API, on any route, allowed or
 	// throttled: every request is a sign of life. Stale is set by the

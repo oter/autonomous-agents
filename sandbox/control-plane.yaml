@@ -20,7 +20,7 @@ runners:
     max_concurrent: 2
 
 secrets:
-  master_identity: /etc/autonomous-agents/age-master.key   # ticket 06
+  master_identity: /etc/autonomous-agents/age-master.key   # 0600; mounted by compose.yaml
 
 journal:
   endpoint: http://host.docker.internal:9000

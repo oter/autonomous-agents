@@ -52,6 +52,14 @@ func main() {
 		URL: *bucketURL, Region: cfg.Journal.Region,
 		AccessKey: os.Getenv("AWS_ACCESS_KEY_ID"), SecretKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
 	}
+	// The master identity is read at every use, not held (ADR-0003); this
+	// one read fails a deploy whose key file is missing, readable by others,
+	// or malformed. Nothing is decrypted until a Run asks.
+	identity := run.MasterIdentity(cfg.Secrets.MasterIdentity)
+	if err := identity.Check(); err != nil {
+		log.Error("secrets", "err", err)
+		os.Exit(1)
+	}
 	store := run.NewStore()
 	spawner := &run.Spawner{
 		Image:           cfg.Image,
@@ -60,6 +68,7 @@ func main() {
 		Runners:         runners,
 		Store:           store,
 		Bucket:          bucket,
+		Identity:        identity,
 		Log:             log,
 	}
 	agents := map[string]config.Agent{}
@@ -87,8 +96,21 @@ func main() {
 		json.MarshalWrite(w, map[string]string{"id": started.ID})
 	})
 
-	go serve(cfg.Listen.Run, run.API(store, bucket, log), log)
+	// Three listeners because the route surface is split three ways (SPEC
+	// §3): the Run API, and with it the secrets endpoint, is served on the
+	// tailnet-bound run listener and nowhere else.
+	go serve(cfg.Listen.Hooks, hooks(), log)
+	go serve(cfg.Listen.Run, run.API(store, bucket, identity, log), log)
 	serve(cfg.Listen.UI, basicAuth(ui, cfg.UI.Username, cfg.UI.PasswordBcrypt), log)
+}
+
+// hooks is the public listener (SPEC §3). Per-Agent HMAC or bearer auth is
+// its only guard, so nothing but /hooks/* is ever routed here; in
+// particular the Run API is not mounted on it.
+// ponytail: an empty mux until ticket 07 routes /hooks/* here; the smallest
+// thing that makes the listener's isolation testable now.
+func hooks() http.Handler {
+	return http.NewServeMux()
 }
 
 func serve(addr string, h http.Handler, log *slog.Logger) {

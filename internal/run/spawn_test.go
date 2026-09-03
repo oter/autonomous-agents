@@ -93,15 +93,19 @@ func TestStartCreatesContainerAndRecordsInspectOutcome(t *testing.T) {
 		Store:           store,
 		PollInterval:    10 * time.Millisecond,
 	}
-	// claude Runs use the subscription token only. An API key in the control
-	// plane's environment must never reach a container: the CLI would prefer
-	// it and bill API credits.
-	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
+	// The model credential comes out of the Allowlist, decrypted at spawn
+	// (SPEC §8: the accepted hole). The control plane's own environment is
+	// not a source, and not a fallback: a claude Run uses the subscription
+	// token only, and an API key there would make the CLI bill credits.
+	identity, encrypt := newIdentity(t)
+	sp.Identity = identity
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-from-the-environment")
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-api03-must-not-leak")
 	agent := config.Agent{
 		Name: "hello", Kind: "claude", Prompt: "Say OK.", Personality: "Terse.", SHA256: "abc123",
 		Runner: "local", ExtraArgs: []string{"--max-turns", "3"},
-		Limits: config.Limits{WallClock: config.Duration{Duration: 5 * time.Minute}, Memory: "512m", CPUs: "1.5"},
+		Limits:  config.Limits{WallClock: config.Duration{Duration: 5 * time.Minute}, Memory: "512m", CPUs: "1.5"},
+		Secrets: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": encrypt("sk-ant-oat01-test"), "LINEAR_API_KEY": encrypt("lin_api_x")},
 	}
 
 	r, err := sp.Start(t.Context(), agent, run.RunNow)
@@ -145,8 +149,13 @@ func TestStartCreatesContainerAndRecordsInspectOutcome(t *testing.T) {
 		}
 	}
 
-	if slices.ContainsFunc(env, func(e string) bool { return strings.HasPrefix(e, "ANTHROPIC_API_KEY=") }) {
-		t.Errorf("ANTHROPIC_API_KEY must never be forwarded to a Run: %q", env)
+	for _, never := range []string{"ANTHROPIC_API_KEY=", "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-from-the-environment", "LINEAR_API_KEY="} {
+		if slices.ContainsFunc(env, func(e string) bool { return strings.HasPrefix(e, never) }) {
+			t.Errorf("%s must not be in a Run's environment: only the model credential, and only from the Allowlist: %q", never, env)
+		}
+	}
+	if got, _ := store.Get(r.ID); len(got.Secrets) != 2 {
+		t.Errorf("the Run does not carry its Allowlist: %+v", got.Secrets)
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -217,6 +226,29 @@ func TestPollerRemovesContainerOnceJournalIsInTheBucket(t *testing.T) {
 	}
 }
 
+// SPEC §8: a credential that does not decrypt is a misconfigured Agent. The
+// Run never starts, and the error names the secret, not its value.
+func TestStartRefusesUndecryptableCredential(t *testing.T) {
+	fake, host := newFakeDocker(t)
+	client, err := docker.New(host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, _ := newIdentity(t)
+	_, other := newIdentity(t)
+	sp := &run.Spawner{Image: "autonomous-agents/agent:test", Runners: map[string]*docker.Client{"local": client}, Store: run.NewStore(), Identity: identity}
+	_, err = sp.Start(t.Context(), config.Agent{
+		Name: "x", Kind: "codex", Runner: "local", Prompt: "x", Secrets: map[string]string{"CODEX_API_KEY": other("sk-proj-nope")},
+		Limits: config.Limits{WallClock: config.Duration{Duration: time.Minute}, Memory: "1g"},
+	}, run.RunNow)
+	if err == nil || !strings.Contains(err.Error(), "CODEX_API_KEY") || strings.Contains(err.Error(), "sk-proj") {
+		t.Errorf("err = %v, want one naming CODEX_API_KEY and no value", err)
+	}
+	if fake.create != nil {
+		t.Error("a container was created for a Run whose credential does not decrypt")
+	}
+}
+
 func TestStartUnknownRunner(t *testing.T) {
 	sp := &run.Spawner{Store: run.NewStore(), Runners: map[string]*docker.Client{}}
 	if _, err := sp.Start(t.Context(), config.Agent{Name: "a", Runner: "macmini"}, run.Trigger{}); err == nil {
@@ -271,7 +303,7 @@ func TestPollerMarksStaleButNeverKills(t *testing.T) {
 	}
 
 	// A heartbeat over the Run API clears the flag ...
-	if res := call(t, run.API(store, run.Bucket{}, nil), "POST", "/run/status", r.Token, `{"status":"running"}`); res.StatusCode != 204 {
+	if res := call(t, run.API(store, run.Bucket{}, "", nil), "POST", "/run/status", r.Token, `{"status":"running"}`); res.StatusCode != 204 {
 		t.Fatalf("heartbeat: %d", res.StatusCode)
 	}
 	if got, _ := store.Get(r.ID); got.Stale || got.Status != "running" {
