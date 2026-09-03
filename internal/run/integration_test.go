@@ -24,8 +24,8 @@ import (
 // fakeBucket is an object store the container PUTs to over a presigned URL
 // and the control plane HEADs before removing the container: it keeps
 // bodies by path and checks nothing else. The signature arithmetic is
-// covered by the AWS worked example in journal_test.go and by the MinIO
-// demo in the ticket.
+// covered by the AWS worked example in journal_test.go and by the sandbox
+// (sandbox/README.md), which runs against a real S3 server.
 type fakeBucket struct {
 	mu      sync.Mutex
 	objects map[string][]byte

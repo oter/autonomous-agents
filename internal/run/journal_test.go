@@ -40,9 +40,9 @@ func TestPresignMatchesAWSWorkedExample(t *testing.T) {
 	}
 }
 
-// SPEC §10 layout under a path-style bucket URL, as R2 and MinIO take it.
+// SPEC §10 layout under a path-style bucket URL, as R2 and the sandbox take it.
 func TestPresignPathStyleLayout(t *testing.T) {
-	b := run.Bucket{URL: mustURL(t, "http://localhost:9000/agentruns"), Region: "auto", AccessKey: "minio", SecretKey: "minio123"}
+	b := run.Bucket{URL: mustURL(t, "http://localhost:9000/agentruns"), Region: "auto", AccessKey: "sandbox", SecretKey: "sandbox123"}
 	got := b.Presign("PUT", "hello/20260902-140000-hello-1a2b/meta.json", time.Now(), run.JournalURLExpiry)
 	want := "http://localhost:9000/agentruns/hello/20260902-140000-hello-1a2b/meta.json?X-Amz-Algorithm="
 	if !strings.HasPrefix(got, want) {

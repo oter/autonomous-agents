@@ -156,7 +156,7 @@ secrets:
 journal:
   endpoint: https://<account>.r2.cloudflarestorage.com
   bucket: agentruns
-  region: auto       # default; what R2 wants, and MinIO does not mind
+  region: auto       # default; what R2 wants, and what the sandbox accepts
   # The credential is AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in the
   # control plane's environment, never in this file; containers get
   # presigned URLs.

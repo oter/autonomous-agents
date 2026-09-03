@@ -13,8 +13,8 @@
 
 ## Answer
 
-`sandbox/`: a compose file (MinIO with a health check, a one-shot bucket
-creation with the `mc` the MinIO image ships, the control plane built from
+`sandbox/`: a compose file (RustFS as the S3 server, a one-shot bucket
+creation with the agent image's `curl`, the control plane built from
 the repository's new root `Dockerfile` with the socket mounted and ports
 8081/8082 published), a checked-in `control-plane.yaml` (UI password
 `sandbox`, image `autonomous-agents/agent:dev`, everything reached over
@@ -22,9 +22,13 @@ the repository's new root `Dockerfile` with the socket mounted and ports
 `Dockerfile` is the control plane's own image, for ticket 14 as well.
 
 Asked for on 2026-09-03 with the fair point that a `/tmp` demo the agent
-deletes afterwards is not something the user can spin up. Verified the same
-day on OrbStack: `up --build`, two run-nows, four objects in MinIO, both
-containers removed, `down -v`.
+deletes afterwards is not something the user can spin up. Built on MinIO
+first; the user pointed out the same day that MinIO's repository was
+archived on 2026-04-25 and its images are unmaintained, so it was swapped
+for RustFS (Apache-2.0, S3-compatible, console on 9001) before the sandbox
+shipped. Verified on OrbStack: `up --build`, two run-nows, four objects,
+both containers removed after the control plane's presigned `HEAD`s, a
+second `up` on the kept volume idempotent, `down -v` clean.
 
 Known limit, in the README: a plain Linux daemon does not give Run
 containers `host.docker.internal`; use a LAN or tailnet address there.

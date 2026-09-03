@@ -33,6 +33,11 @@ begins. No storage credential enters a container.
 
 The work branch remains in git, because that is real code.
 
+**Update, 2026-09-03.** MinIO's community repository was archived on
+2026-04-25 and its images are unmaintained. The decision is unchanged, since
+it names the protocol; the sandbox and any self-hosted choice use an
+S3-compatible server that is still maintained (RustFS in `sandbox/`).
+
 ## Consequences
 
 Object PUTs cost the same on the first Run as on the hundred-thousandth, so

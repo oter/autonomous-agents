@@ -1,28 +1,28 @@
-# Local sandbox: MinIO as the Journal bucket, and the control plane as a
-# container with the Docker socket, the way Coolify runs it. Runs are
-# containers on your own daemon and reach both over host.docker.internal.
+# Local sandbox: RustFS as the Journal bucket (S3-compatible, Apache-2.0;
+# MinIO's community repository was archived in April 2026), and the control
+# plane as a container with the Docker socket, the way Coolify runs it. Runs
+# are containers on your own daemon and reach both over host.docker.internal.
 name: autonomous-agents
 services:
-  minio:
-    image: minio/minio
-    command: server /data --console-address :9001
+  storage:
+    image: rustfs/rustfs
     environment:
-      MINIO_ROOT_USER: sandbox
-      MINIO_ROOT_PASSWORD: sandbox123
+      RUSTFS_ACCESS_KEY: sandbox
+      RUSTFS_SECRET_KEY: sandbox123
+      RUSTFS_CONSOLE_ENABLE: "true"
     ports: ["9000:9000", "9001:9001"]
-    volumes: ["minio:/data"]
-    healthcheck:
-      test: ["CMD-SHELL", "mc alias set local http://localhost:9000 sandbox sandbox123 && mc ready local"]
-      interval: 2s
-      retries: 15
+    volumes: ["storage:/data"]
 
-  # One-shot: the bucket the config names. ListObjects is the index (SPEC
-  # §10), so this is the only setup a bucket ever needs.
+  # One-shot: the bucket the config names, made with the agent image's curl
+  # (it is on the daemon anyway). Create it, or confirm it is already there
+  # from an earlier up. ListObjects is the index (SPEC §10), so this is all
+  # the setup a bucket ever needs.
   bucket:
-    image: minio/minio
-    depends_on:
-      minio: { condition: service_healthy }
-    entrypoint: ["sh", "-c", "mc alias set local http://minio:9000 sandbox sandbox123 && mc mb --ignore-existing local/agentruns"]
+    image: autonomous-agents/agent:dev
+    depends_on: [storage]
+    entrypoint: ["sh", "-c", "until curl -sS -o /dev/null http://storage:9000/; do sleep 1; done;
+      s3() { curl -fsS --aws-sigv4 aws:amz:auto:s3 -u sandbox:sandbox123 \"$@\"; };
+      s3 -X PUT http://storage:9000/agentruns || s3 -I http://storage:9000/agentruns"]
 
   control-plane:
     build: ..
@@ -43,4 +43,4 @@ services:
     extra_hosts: ["host.docker.internal:host-gateway"]
 
 volumes:
-  minio:
+  storage:

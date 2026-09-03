@@ -1,6 +1,8 @@
 # Sandbox
 
-Run the control plane on your own machine, with MinIO as the Journal bucket.
+Run the control plane on your own machine, with RustFS as the Journal bucket.
+RustFS is an S3-compatible server under the Apache-2.0 license; it stands
+where MinIO used to, whose community repository was archived in April 2026.
 The control plane runs as a container with the Docker socket, the same way
 Coolify runs it. Runs are containers on your own Docker daemon.
 
@@ -29,8 +31,9 @@ Coolify runs it. Runs are containers on your own Docker daemon.
 ## Look
 
 - Control plane log: `docker compose -f sandbox/compose.yaml logs -f control-plane`
-- Journals: the MinIO console at <http://localhost:9001> (user `sandbox`,
-  password `sandbox123`), bucket `agentruns`. Or from the shell:
+- Journals: the RustFS console at <http://localhost:9001/rustfs/console/>
+  (the access key `sandbox` and secret `sandbox123` are the login), bucket
+  `agentruns`. Or from the shell:
 
       curl --aws-sigv4 aws:amz:auto:s3 -u sandbox:sandbox123 'http://localhost:9000/agentruns?list-type=2'
       curl --aws-sigv4 aws:amz:auto:s3 -u sandbox:sandbox123 http://localhost:9000/agentruns/hello/<run-id>/meta.json
@@ -51,7 +54,7 @@ the control plane; there is no hot reload:
 
 ## Known limit
 
-Runs reach the control plane and MinIO through `host.docker.internal`.
+Runs reach the control plane and RustFS through `host.docker.internal`.
 Docker Desktop and OrbStack give every container that name. On a plain Linux
 daemon, Run containers do not get it; put the host's LAN or tailnet address
 in `control-plane.yaml` instead.
