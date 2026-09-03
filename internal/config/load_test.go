@@ -41,7 +41,7 @@ ui:
   username: oter
   password_bcrypt: "$2a$12$placeholder"
 agents_dir: ./agents
-image: ghcr.io/oter/agent-base:2026-08-31
+image: ghcr.io/oter/autonomous-agents/agent:2026-08-31
 stop_grace: 90s
 control_plane_url: http://100.64.0.1:8082
 runners:
@@ -334,7 +334,7 @@ func TestLoadValidTree(t *testing.T) {
 	if cfg.UI.Username != "oter" || cfg.UI.PasswordBcrypt != "$2a$12$placeholder" {
 		t.Errorf("ui = %+v", cfg.UI)
 	}
-	if cfg.Image != "ghcr.io/oter/agent-base:2026-08-31" {
+	if cfg.Image != "ghcr.io/oter/autonomous-agents/agent:2026-08-31" {
 		t.Errorf("image = %q", cfg.Image)
 	}
 	if cfg.StopGrace.Duration != 90*time.Second {
@@ -363,7 +363,7 @@ func TestLoadValidTree(t *testing.T) {
 // the control plane over control_plane_url, runs from image, and a zero
 // stop_grace would SIGKILL straight after TERM and lose every Journal.
 func TestSpawnConfigRequiredAtStartup(t *testing.T) {
-	for _, line := range []string{"control_plane_url: http://100.64.0.1:8082\n", "image: ghcr.io/oter/agent-base:2026-08-31\n", "stop_grace: 90s\n"} {
+	for _, line := range []string{"control_plane_url: http://100.64.0.1:8082\n", "image: ghcr.io/oter/autonomous-agents/agent:2026-08-31\n", "stop_grace: 90s\n"} {
 		key, _, _ := strings.Cut(line, ":")
 		cfgPath := writeTree(t, strings.Replace(validControlPlane, line, "", 1), map[string]string{"a.yaml": minimalAgent})
 		if _, err := config.Load(cfgPath); err == nil || !strings.Contains(err.Error(), key) {

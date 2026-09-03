@@ -43,8 +43,8 @@ func newFakeDocker(t *testing.T) (*fakeDocker, string) {
 	mux.HandleFunc("POST /containers/cid123/start", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(204)
 	})
-	mux.HandleFunc("GET /images/agent-base:test/json", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"Id":"sha256:deadbeef","RepoTags":["agent-base:test"],"RepoDigests":["ghcr.io/oter/agent-base@sha256:feed"]}`))
+	mux.HandleFunc("GET /images/autonomous-agents/agent:test/json", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"Id":"sha256:deadbeef","RepoTags":["autonomous-agents/agent:test"],"RepoDigests":["ghcr.io/oter/autonomous-agents/agent@sha256:feed"]}`))
 	})
 	mux.HandleFunc("DELETE /containers/cid123", func(w http.ResponseWriter, r *http.Request) {
 		f.removed.Store(true)
@@ -86,7 +86,7 @@ func TestStartCreatesContainerAndRecordsInspectOutcome(t *testing.T) {
 	}
 	store := run.NewStore()
 	sp := &run.Spawner{
-		Image:           "agent-base:test",
+		Image:           "autonomous-agents/agent:test",
 		StopGrace:       90 * time.Second,
 		ControlPlaneURL: "http://cp:8082",
 		Runners:         map[string]*docker.Client{"local": client},
@@ -119,7 +119,7 @@ func TestStartCreatesContainerAndRecordsInspectOutcome(t *testing.T) {
 	}
 
 	c := fake.create
-	if c["Image"] != "agent-base:test" || c["StopTimeout"] != 90.0 {
+	if c["Image"] != "autonomous-agents/agent:test" || c["StopTimeout"] != 90.0 {
 		t.Errorf("create = %v", c)
 	}
 	hc := c["HostConfig"].(map[string]any)
@@ -137,7 +137,7 @@ func TestStartCreatesContainerAndRecordsInspectOutcome(t *testing.T) {
 		"CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test",
 		// SPEC §10's at-start facts only the control plane knows, for meta.json.
 		`RUN_META={"agent_sha256":"abc123","runner":"local","trigger_kind":"manual","trigger_name":"run-now",` +
-			`"image":"agent-base:test","image_id":"sha256:deadbeef","image_digest":"ghcr.io/oter/agent-base@sha256:feed",` +
+			`"image":"autonomous-agents/agent:test","image_id":"sha256:deadbeef","image_digest":"ghcr.io/oter/autonomous-agents/agent@sha256:feed",` +
 			`"wall_clock_seconds":300,"memory":"512m","cpus":"1.5"}`,
 	} {
 		if !slices.Contains(env, want) {
@@ -188,7 +188,7 @@ func TestPollerRemovesContainerOnceJournalIsInTheBucket(t *testing.T) {
 	t.Cleanup(bucket.Close)
 	store := run.NewStore()
 	sp := &run.Spawner{
-		Image: "agent-base:test", ControlPlaneURL: "http://cp:8082",
+		Image: "autonomous-agents/agent:test", ControlPlaneURL: "http://cp:8082",
 		Runners: map[string]*docker.Client{"local": client}, Store: store,
 		Bucket:       run.Bucket{URL: mustURL(t, bucket.URL+"/agentruns"), Region: "auto", AccessKey: "k", SecretKey: "s"},
 		PollInterval: 5 * time.Millisecond,
@@ -236,7 +236,7 @@ func TestPollerMarksStaleButNeverKills(t *testing.T) {
 	}
 	store := run.NewStore()
 	sp := &run.Spawner{
-		Image: "agent-base:test", ControlPlaneURL: "http://cp:8082",
+		Image: "autonomous-agents/agent:test", ControlPlaneURL: "http://cp:8082",
 		Runners: map[string]*docker.Client{"local": client}, Store: store,
 		PollInterval: 5 * time.Millisecond, StaleAfter: 40 * time.Millisecond,
 	}

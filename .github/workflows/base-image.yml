@@ -33,4 +33,6 @@ jobs:
           context: image
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/oter/agent-base:${{ steps.tag.outputs.tag }}
+          tags: ghcr.io/oter/autonomous-agents/agent:${{ steps.tag.outputs.tag }}
+          # The source label is what makes GitHub list the package on the repo.
+          labels: org.opencontainers.image.source=https://github.com/oter/autonomous-agents

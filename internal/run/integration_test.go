@@ -58,8 +58,8 @@ func (b *fakeBucket) get(key string) ([]byte, bool) {
 // real entrypoint, the real Run API, and since ticket 05 a Journal that
 // lands in a bucket. Needs Docker and the image:
 //
-//	docker build -t agent-base:dev image/
-//	AA_IMAGE=agent-base:dev go test ./internal/run -run WalkingSkeleton -v
+//	docker build -t autonomous-agents/agent:dev image/
+//	AA_IMAGE=autonomous-agents/agent:dev go test ./internal/run -run WalkingSkeleton -v
 //
 // Without CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) the trivial Run
 // still completes end to end, with the CLI's auth failure recorded as its

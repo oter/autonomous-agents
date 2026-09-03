@@ -138,7 +138,7 @@ ui:
   password_bcrypt: "$2a$12$..."
 
 agents_dir: ./agents
-image: ghcr.io/oter/agent-base:2026-08-31
+image: ghcr.io/oter/autonomous-agents/agent:2026-08-31
 stop_grace: 90s
 control_plane_url: http://100.64.0.1:8082   # listen.run as reached from a Run
 
@@ -193,7 +193,9 @@ it for one supervised process.
 ## 4. Base image
 
 One shared image for every Agent. No per-Agent images, no build pipeline, no
-registry beyond this one image.
+registry beyond this one image. It is published as
+`ghcr.io/oter/autonomous-agents/agent`; that last word names what a Run's
+container executes, not an Agent in the glossary's sense.
 
 Contains: `claude`, `codex`, the `skills` CLI (`npm i -g skills`, so `npx` does
 not re-download it every Run), `curl`, `jq`, `git`, `tar`, `zstd`, `iptables`,
@@ -489,8 +491,8 @@ summary of `stream.jsonl` computed by `stream.jq` in the image.
   "run_id": "20260902-142724-hello-1dd6", "agent": "hello", "agent_sha256": "<hex>",
   "runner": "local", "trigger_kind": "manual", "trigger_name": "run-now",
   "cli": "claude", "cli_version": "2.1.258 (Claude Code)",
-  "image": "ghcr.io/oter/agent-base:2026-09-04", "image_id": "sha256:<hex>",
-  "image_digest": "ghcr.io/oter/agent-base@sha256:<hex>",
+  "image": "ghcr.io/oter/autonomous-agents/agent:2026-09-04", "image_id": "sha256:<hex>",
+  "image_digest": "ghcr.io/oter/autonomous-agents/agent@sha256:<hex>",
   "wall_clock_seconds": 300, "memory": "1g", "cpus": "1",
   "prompt": "<verbatim>", "personality": "<verbatim>",
   "started_at": "2026-09-02T14:27:24Z", "ended_at": "2026-09-02T14:27:25Z", "duration_seconds": 1,
