@@ -1,0 +1,46 @@
+# Local sandbox: MinIO as the Journal bucket, and the control plane as a
+# container with the Docker socket, the way Coolify runs it. Runs are
+# containers on your own daemon and reach both over host.docker.internal.
+name: autonomous-agents
+services:
+  minio:
+    image: minio/minio
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: sandbox
+      MINIO_ROOT_PASSWORD: sandbox123
+    ports: ["9000:9000", "9001:9001"]
+    volumes: ["minio:/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "mc alias set local http://localhost:9000 sandbox sandbox123 && mc ready local"]
+      interval: 2s
+      retries: 15
+
+  # One-shot: the bucket the config names. ListObjects is the index (SPEC
+  # §10), so this is the only setup a bucket ever needs.
+  bucket:
+    image: minio/minio
+    depends_on:
+      minio: { condition: service_healthy }
+    entrypoint: ["sh", "-c", "mc alias set local http://minio:9000 sandbox sandbox123 && mc mb --ignore-existing local/agentruns"]
+
+  control-plane:
+    build: ..
+    depends_on:
+      bucket: { condition: service_completed_successfully }
+    ports: ["8081:8081", "8082:8082"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./control-plane.yaml:/etc/autonomous-agents/control-plane.yaml:ro
+      - ./agents:/etc/autonomous-agents/agents:ro
+    environment:
+      AWS_ACCESS_KEY_ID: sandbox
+      AWS_SECRET_ACCESS_KEY: sandbox123
+      # Model credentials pass through from your shell; unset is fine.
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      CODEX_API_KEY: ${CODEX_API_KEY:-}
+    # Docker Desktop and OrbStack provide the name; a plain Linux daemon needs this.
+    extra_hosts: ["host.docker.internal:host-gateway"]
+
+volumes:
+  minio:

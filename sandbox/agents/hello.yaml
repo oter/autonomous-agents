@@ -1,0 +1,6 @@
+name: hello
+agent: claude
+prompt: Reply with the single word OK.
+limits:
+  wall_clock: 2m
+  memory: 1g

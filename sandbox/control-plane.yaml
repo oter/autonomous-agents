@@ -1,0 +1,27 @@
+# Sandbox control-plane config (SPEC §3). Everything in it is throwaway:
+# the UI password is "sandbox", the bucket credential is in compose.yaml.
+listen:
+  hooks: ":8080"
+  ui:    ":8081"
+  run:   ":8082"
+
+ui:
+  username: sandbox
+  password_bcrypt: "$2a$04$LRKNxw3LBqSoUG/2YsOHpuRTJetzK7OueUXgqt3JLFZPD2oYwtnui"
+
+agents_dir: ./agents
+image: autonomous-agents/agent:dev
+stop_grace: 90s
+control_plane_url: http://host.docker.internal:8082
+
+runners:
+  local:
+    docker_host: "unix:///var/run/docker.sock"
+    max_concurrent: 2
+
+secrets:
+  master_identity: /etc/autonomous-agents/age-master.key   # ticket 06
+
+journal:
+  endpoint: http://host.docker.internal:9000
+  bucket: agentruns

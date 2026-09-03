@@ -1,0 +1,8 @@
+# Outlives its wall clock on purpose: shows the TERM path and a Journal
+# with no terminal event.
+name: sleepy
+agent: codex
+prompt: Run `sleep 120` in the shell, then say done.
+limits:
+  wall_clock: 5s
+  memory: 1g
