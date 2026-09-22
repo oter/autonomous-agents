@@ -4,7 +4,7 @@ FROM golang:1.27-trixie AS golang
 
 # Official Node LTS on Debian trixie. The CLIs need Node >= 22 and trixie's
 # own apt package is frozen at 20 for the life of the release.
-FROM node:24-trixie-slim
+FROM node:25-trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential ca-certificates curl git iptables jq pkg-config python3 \
